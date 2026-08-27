@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Checkpoints — Dashboard</title>
+    <meta
+      name="description"
+      content="Smart Checkpoints dashboard — manage your checkpoint projects"
+    />
+    <link rel="icon" href="/Images/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/Css/dashboard.css" />
+    <link rel="stylesheet" href="/Css/cursor.css" />
+    <script src="/Js/cursor.js" defer></script>
+  </head>
+  <body>
+    <div class="custom-cursor"></div>
+    <!-- Header -->
+    <header id="dashboard-header">
+      <div class="header-left">
+        <div class="logo">
+          <img
+            src="/Images/logo.png"
+            alt="Smart Checkpoints"
+            class="logo-img"
+          />
+        </div>
+      </div>
+      <div class="header-right">
+        <a href="/documentation" class="header-link">Documentation</a>
+        <a href="/admin" class="header-link">Admin</a>
+      </div>
+    </header>
+
+    <!-- Cards Grid -->
+    <main id="projects-grid"></main>
+
+    <!-- API Key Modal -->
+    <div id="api-key-modal" class="modal-overlay hidden">
+      <div class="modal">
+        <button class="modal-close" id="api-modal-close">&times;</button>
+        <h2>Enter API Key</h2>
+        <p class="modal-subtitle">Authenticate to open this project</p>
+        <input
+          type="text"
+          id="api-key-input"
+          placeholder="Paste your API key here..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p id="api-key-error" class="modal-error hidden">Invalid API key</p>
+        <button id="api-key-submit" class="modal-btn">Open Project</button>
+      </div>
+    </div>
+
+    <!-- New Project Modal -->
+    <div id="new-project-modal" class="modal-overlay hidden">
+      <div class="modal">
+        <button class="modal-close" id="new-modal-close">&times;</button>
+        <h2>New Project</h2>
+        <p class="modal-subtitle">Give your project a name</p>
+        <input
+          type="text"
+          id="new-project-name"
+          placeholder="My Checkpoint Network"
+          autocomplete="off"
+        />
+        <button id="new-project-submit" class="modal-btn">Create</button>
+        <!-- API Key reveal -->
+        <div id="api-key-reveal" class="hidden">
+          <p class="modal-subtitle" style="margin-top: 18px">
+            Your API Key (save it!):
+          </p>
+          <div class="api-key-display" id="api-key-display"></div>
+          <button id="api-key-copy" class="modal-btn modal-btn-secondary">
+            Copy
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/Js/dashboard.js"></script>
+  </body>
+</html>

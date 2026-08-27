@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Checkpoints — API Documentation</title>
+    <link rel="icon" href="/Images/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/Css/documentation.css" />
+    <link rel="stylesheet" href="/Css/cursor.css" />
+    <script src="/Js/cursor.js" defer></script>
+  </head>
+  <body>
+    <div class="custom-cursor"></div>
+    <!-- Header -->
+    <header id="doc-header">
+      <div class="header-left">
+        <a href="/" class="logo">
+          <img
+            src="/Images/logo.png"
+            alt="Smart Checkpoints"
+            class="logo-img"
+          />
+        </a>
+      </div>
+      <div class="header-right">
+        <a href="/documentation" class="header-link active">Documentation</a>
+        <a href="/admin" class="header-link">Admin</a>
+      </div>
+    </header>
+
+    <main class="doc-content">
+      <div class="doc-hero">
+        <h1>API Documentation</h1>
+        <p>Everything you need to integrate with Smart Checkpoints.</p>
+      </div>
+
+      <section class="doc-section">
+        <h2>Authentication</h2>
+        <p>
+          All API requests (except project listing and project creation) require
+          an API key passed via the <code>x-api-key</code> header.
+        </p>
+        <div class="endpoint-card">
+          <div class="endpoint-method post">POST</div>
+          <div class="endpoint-path">/authenticate</div>
+          <div class="endpoint-desc">
+            Verify an API key and get the associated project ID.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "api-key": "your-api-key-here"
+}</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>{
+  "project_id": 1,
+  "project_name": "My Project"
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>Projects</h2>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method get">GET</div>
+          <div class="endpoint-path">/list-projects</div>
+          <div class="endpoint-desc">
+            List all projects (no authentication required).
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>[
+  {
+    "project_id": 1,
+    "project_name": "Highway Network",
+    "node_count": 5,
+    "connection_count": 4
+  }
+]</code></pre>
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method post">POST</div>
+          <div class="endpoint-path">/create-project</div>
+          <div class="endpoint-desc">
+            Create a new project and get its API key.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "project-name": "My New Project"
+}</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>{
+  "project_id": 2,
+  "api_key": "AbCdEfGh..."
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>Nodes</h2>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method post">POST</div>
+          <div class="endpoint-path">/create-node</div>
+          <div class="endpoint-desc">
+            Create a new checkpoint node in the project. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "x-coord": 150.0,
+  "y-coord": 200.0
+}</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>{
+  "node_id": 10,
+  "id_in_project": 3
+}</code></pre>
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method get">GET</div>
+          <div class="endpoint-path">/project/:id/nodes</div>
+          <div class="endpoint-desc">
+            Get all nodes for a project. Requires <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>[
+  {
+    "node_id": 1,
+    "id_in_project": 0,
+    "x_coord": 100.0,
+    "y_coord": 150.0
+  }
+]</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>Connections</h2>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method post">POST</div>
+          <div class="endpoint-path">/create-connection</div>
+          <div class="endpoint-desc">
+            Create a directional connection between two nodes. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "from-node-id": 1,
+  "to-node-id": 2,
+  "distance": 500.0,
+  "speed-limit": 60.0
+}</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>{
+  "connection_id": 5
+}</code></pre>
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method get">GET</div>
+          <div class="endpoint-path">/project/:id/connections</div>
+          <div class="endpoint-desc">
+            Get all connections for a project. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>[
+  {
+    "connection_id": 1,
+    "from_node_id": 1,
+    "to_node_id": 2,
+    "distance": 500.0,
+    "speed_limit": 60.0
+  }
+]</code></pre>
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method put">PUT</div>
+          <div class="endpoint-path">/connection/:id</div>
+          <div class="endpoint-desc">
+            Update a connection's distance and speed limit. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "distance": 600.0,
+  "speed-limit": 80.0
+}</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>Checkpoint Reporting</h2>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method post">POST</div>
+          <div class="endpoint-path">/report-checkpoint</div>
+          <div class="endpoint-desc">
+            Report a car passing through a checkpoint. This is the core endpoint
+            for speed violation detection. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Request Body</div>
+            <pre><code>{
+  "car-plate": "ABC-1234",
+  "id-in-project": 0,
+  "timestamp": "2026-02-13T18:30:00.000Z"
+}</code></pre>
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>{
+  "status": true,
+  "carSpeed": 85.2,
+  "legalLimit": 60,
+  "timestamp": "2026-02-13T18:30:00.000Z",
+  "nodeId": 3,
+  "carPlate": "ABC-1234"
+}</code></pre>
+          </div>
+          <div class="endpoint-note">
+            <strong>Note:</strong> The <code>timestamp</code> field is optional.
+            If omitted, the server uses the current time. The
+            <code>status</code> field in the response indicates whether a speed
+            violation was detected (<code>true</code> = violation).
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>Violations</h2>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method get">GET</div>
+          <div class="endpoint-path">/project/:id/violations</div>
+          <div class="endpoint-desc">
+            Get all recorded speed violations for a project. Requires
+            <code>x-api-key</code> header.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Response</div>
+            <pre><code>[
+  {
+    "violation_id": 1,
+    "car_plate": "ABC-1234",
+    "car_speed": 85.2,
+    "timestamp": "2026-02-13T18:30:00.000Z"
+  }
+]</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc-section">
+        <h2>WebSocket Events</h2>
+        <p>
+          Connect via Socket.IO. After connecting, emit
+          <code>join-project</code> with your API key to subscribe to real-time
+          events.
+        </p>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">EMIT</div>
+          <div class="endpoint-path">join-project</div>
+          <div class="code-block">
+            <div class="code-label">Payload</div>
+            <pre><code>{ "apiKey": "your-api-key" }</code></pre>
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">ON</div>
+          <div class="endpoint-path">node-added</div>
+          <div class="endpoint-desc">Emitted when a new node is created.</div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">ON</div>
+          <div class="endpoint-path">connection-added</div>
+          <div class="endpoint-desc">
+            Emitted when a new connection is created.
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">ON</div>
+          <div class="endpoint-path">connection-updated</div>
+          <div class="endpoint-desc">
+            Emitted when a connection's distance or speed limit changes.
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">ON</div>
+          <div class="endpoint-path">node-triggered</div>
+          <div class="endpoint-desc">
+            Emitted when a car passes through a checkpoint node.
+          </div>
+        </div>
+
+        <div class="endpoint-card">
+          <div class="endpoint-method ws">ON</div>
+          <div class="endpoint-path">violation-added</div>
+          <div class="endpoint-desc">
+            Emitted when a speed violation is detected.
+          </div>
+          <div class="code-block">
+            <div class="code-label">Payload</div>
+            <pre><code>{
+  "car_plate": "ABC-1234",
+  "car_speed": 85.2,
+  "timestamp": "2026-02-13T18:30:00.000Z"
+}</code></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

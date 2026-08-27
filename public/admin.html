@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Smart Checkpoints — Admin</title>
+    <link rel="icon" href="/Images/favicon.ico" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/Css/admin.css" />
+    <link rel="stylesheet" href="/Css/cursor.css" />
+    <script src="/Js/cursor.js" defer></script>
+  </head>
+  <body>
+    <div class="custom-cursor"></div>
+    <!-- Header -->
+    <header id="admin-header">
+      <div class="header-left">
+        <a href="/" class="logo">
+          <img
+            src="/Images/logo.png"
+            alt="Smart Checkpoints"
+            class="logo-img"
+          />
+        </a>
+      </div>
+      <div class="header-right">
+        <a href="/documentation" class="header-link">Documentation</a>
+        <a href="/admin" class="header-link active">Admin</a>
+      </div>
+    </header>
+
+    <main class="admin-content">
+      <!-- Password Gate -->
+      <div id="password-gate">
+        <div class="gate-card">
+          <div class="gate-icon">🔒</div>
+          <h2>Admin Dashboard</h2>
+          <p>Enter the admin password to continue</p>
+          <input
+            type="password"
+            id="admin-password"
+            placeholder="Password"
+            autocomplete="off"
+          />
+          <p id="admin-error" class="gate-error hidden">Invalid password</p>
+          <button id="admin-login" class="gate-btn">Login</button>
+        </div>
+      </div>
+
+      <!-- Projects Table (hidden until auth) -->
+      <div id="admin-dashboard" class="hidden">
+        <div class="admin-table-header">
+          <h2>All Projects</h2>
+          <span id="project-count" class="project-count"></span>
+        </div>
+        <div class="table-container">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Project Name</th>
+                <th>API Key</th>
+                <th>Nodes</th>
+                <th>Connections</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="admin-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+
+    <script src="/Js/admin.js"></script>
+  </body>
+</html>

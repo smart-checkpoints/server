@@ -3,17 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Smart Checkpoints - API Documentation</title>
-    <link rel="icon" href="/Images/favicon.ico" />
+    <title>Smart Checkpoints — API Documentation</title>
+    <link rel="icon" href="/images/favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/Css/documentation.css" />
-    <link rel="stylesheet" href="/Css/cursor.css" />
-    <script src="/Js/cursor.js" defer></script>
+    <link rel="stylesheet" href="/css/documentation.css" />
+    <link rel="stylesheet" href="/css/cursor.css" />
+    <script src="/js/cursor.js" defer></script>
   </head>
   <body>
     <div class="custom-cursor"></div>
@@ -22,7 +22,7 @@
       <div class="header-left">
         <a href="/" class="logo">
           <img
-            src="/Images/logo.png"
+            src="/images/logo.png"
             alt="Smart Checkpoints"
             class="logo-img"
           />
@@ -120,13 +120,15 @@
           <div class="endpoint-path">/create-node</div>
           <div class="endpoint-desc">
             Create a new checkpoint node in the project. Requires
-            <code>x-api-key</code> header.
+            <code>x-api-key</code> header. Coordinates are WGS84 degrees:
+            <code>latitude</code> within ±90 and <code>longitude</code> within
+            ±180. Anything else is rejected with <code>400</code>.
           </div>
           <div class="code-block">
             <div class="code-label">Request Body</div>
             <pre><code>{
-  "x-coord": 150.0,
-  "y-coord": 200.0
+  "latitude": 31.2001,
+  "longitude": 29.9187
 }</code></pre>
           </div>
           <div class="code-block">
@@ -143,6 +145,7 @@
           <div class="endpoint-path">/project/:id/nodes</div>
           <div class="endpoint-desc">
             Get all nodes for a project. Requires <code>x-api-key</code> header.
+            Coordinates are WGS84 degrees.
           </div>
           <div class="code-block">
             <div class="code-label">Response</div>
@@ -150,8 +153,8 @@
   {
     "node_id": 1,
     "id_in_project": 0,
-    "x_coord": 100.0,
-    "y_coord": 150.0
+    "latitude": 31.2001,
+    "longitude": 29.9187
   }
 ]</code></pre>
           </div>
@@ -307,6 +310,15 @@
           <div class="endpoint-method ws">ON</div>
           <div class="endpoint-path">node-added</div>
           <div class="endpoint-desc">Emitted when a new node is created.</div>
+          <div class="code-block">
+            <div class="code-label">Payload</div>
+            <pre><code>{
+  "node_id": 10,
+  "id_in_project": 3,
+  "latitude": 31.2001,
+  "longitude": 29.9187
+}</code></pre>
+          </div>
         </div>
 
         <div class="endpoint-card">

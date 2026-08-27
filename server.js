@@ -16,6 +16,12 @@ const http = require("http");
 const { Server } = require("socket.io");
 const WebSocket = require("ws");
 const crypto = require("crypto");
+const { parseCoordinate, isValidLatLng } = require("./geo.js");
+
+// Every coordinate entering the system is WGS84 degrees. Rejecting here is the
+// only thing standing between a typo and enforcement built on a wrong position.
+const INVALID_COORDINATES =
+  "latitude must be a finite number within +/-90 and longitude within +/-180";
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -181,20 +187,19 @@ function requestDistanceFromDriver(projectId, fromIdInProject, toIdInProject) {
 const db = createDatabase(path.join(__dirname, "database.db"));
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "Public")));
-initializeDatabase(db);
+app.use(express.static(path.join(__dirname, "public")));
 
 // --- Serve pages ---
 app.get("/project", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "project.html"));
+  res.sendFile(path.join(__dirname, "public", "project.html"));
 });
 
 app.get("/documentation", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "documentation.html"));
+  res.sendFile(path.join(__dirname, "public", "documentation.html"));
 });
 
 app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "admin.html"));
+  res.sendFile(path.join(__dirname, "public", "admin.html"));
 });
 
 // --- REST Endpoints ---
@@ -225,21 +230,31 @@ app.post("/authenticate", async (req, res) => {
   }
 });
 
+// Altitude is future work: nodes carry latitude/longitude only for now, and
+// the column naming leaves room for an `altitude` column later.
 app.post("/create-node", authenticateAPIKey(db), async (req, res) => {
   try {
     const projectId = req.projectId;
-    const xCoord = req.body["x-coord"];
-    const yCoord = req.body["y-coord"];
-    const zCoord = req.body["z-coord"]; // Optional 3D coordinate
+    const latitude = parseCoordinate(req.body["latitude"]);
+    const longitude = parseCoordinate(req.body["longitude"]);
 
-    const result = await statements.createNode(projectId, xCoord, yCoord, db);
+    if (!isValidLatLng(latitude, longitude)) {
+      return res.status(400).json({ error: INVALID_COORDINATES });
+    }
+
+    const result = await statements.createNode(
+      projectId,
+      latitude,
+      longitude,
+      db,
+    );
 
     // Emit to connected clients
     io.to(`project-${projectId}`).emit("node-added", {
       node_id: result.node_id,
       id_in_project: result.id_in_project,
-      x_coord: xCoord,
-      y_coord: yCoord,
+      latitude,
+      longitude,
     });
 
     res.json({
@@ -248,7 +263,7 @@ app.post("/create-node", authenticateAPIKey(db), async (req, res) => {
     });
   } catch (err) {
     console.error("Error creating node:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to create node" });
   }
 });
 
@@ -306,7 +321,7 @@ app.post("/create-connection", authenticateAPIKey(db), async (req, res) => {
     res.send({ connection_id: connectionId });
   } catch (err) {
     console.error("Error creating connection:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to create connection" });
   }
 });
 
@@ -561,16 +576,26 @@ io.on("connection", (socket) => {
 });
 
 // --- Start Server ---
-server.listen(port);
-console.log(
-  `🎧 Listening on localhost:${port}\n📌 Local Network Path: ${getWifiAddress()}:${port}`,
-);
+// The schema migration must finish before anything can read a coordinate, and
+// a failed migration must stop startup rather than serve wrong positions.
+initializeDatabase(db)
+  .then(() => {
+    server.listen(port);
+    console.log(
+      `🎧 Listening on localhost:${port}\n📌 Local Network Path: ${getWifiAddress()}:${port}`,
+    );
+    setInterval(broadcastCongestion, CONGESTION_INTERVAL_MS);
+  })
+  .catch((err) => {
+    console.error("💥 Database initialization failed:", err.message);
+    process.exit(1);
+  });
 
 // --- Congestion Broadcast Loop ---
 const CONGESTION_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const CONGESTION_INTERVAL_MS = 3000; // every 3 seconds
 
-setInterval(async () => {
+async function broadcastCongestion() {
   try {
     // Prune old traversals
     await statements.deleteOldTraversals(CONGESTION_WINDOW_MS, db);
@@ -611,7 +636,7 @@ setInterval(async () => {
   } catch (err) {
     console.error("Congestion broadcast error:", err);
   }
-}, CONGESTION_INTERVAL_MS);
+}
 
 // --- Helpers ---
 function getWifiAddress() {
@@ -708,7 +733,7 @@ async function calculateViolation(carPlate, nodeId, sightingTime) {
   console.log(carSpeed, connection.speed_limit);
   console.log(carTransversalTime, maximumTransversalTime, connection.distance);
 
-  violationData = {
+  const violationData = {
     status,
     carSpeed: carSpeed,
     legalLimit: connection.speed_limit,

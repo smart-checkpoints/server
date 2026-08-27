@@ -39,6 +39,12 @@ async function fetchThumbnailData(projectId) {
 }
 
 // --- Draw mini thumbnail with real data ---
+//
+// The server hands over shape only: node positions arrive already projected
+// onto the local tangent plane (north up, aspect ratio preserved) and rescaled
+// into the unit square, so no camera's GPS position is disclosed here. The fit
+// below only has to map that unit square onto the canvas — it must keep using
+// a single `Math.min` scale for both axes or it will stretch the graph.
 function drawThumbnail(canvas, thumbData) {
   const ctx = canvas.getContext("2d");
   const w = canvas.width;

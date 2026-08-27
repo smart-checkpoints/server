@@ -14,10 +14,41 @@
   }
 
   // --- State ---
-  let nodes = []; // { node_id, id_in_project, x_coord, y_coord }
+  let nodes = []; // { node_id, id_in_project, latitude, longitude }
   let connections = []; // { connection_id, from_node_id, to_node_id, distance, speed_limit }
-  let settingsScale = 1.0; // Scale multiplier for node positions
 
+  // --- Projection ---
+  // Node coordinates are WGS84 degrees; the canvas works in metres on a local
+  // tangent plane. The origin is the centroid of the nodes present when the
+  // project loads and stays fixed for the session — recomputing it as nodes
+  // arrive would make the whole view jump under the operator.
+  let projection = null;
+
+  function ensureProjection() {
+    if (projection || nodes.length === 0) return;
+    let sumLat = 0;
+    let sumLng = 0;
+    for (const n of nodes) {
+      sumLat += n.latitude;
+      sumLng += n.longitude;
+    }
+    projection = SmartCheckpointsGeo.makeProjection(
+      sumLat / nodes.length,
+      sumLng / nodes.length,
+    );
+  }
+
+  /** World position of a node, in metres east / metres south of the origin. */
+  function nodeXY(node) {
+    ensureProjection();
+    if (!projection) return { x: 0, y: 0 };
+    return projection.project(node.latitude, node.longitude);
+  }
+
+  // NODE_RADIUS and friends are screen pixels, not metres. Dividing by `zoom`
+  // inside the zoomed transform keeps a node the same size on screen whether
+  // the operator is looking at one junction or the whole city — which is what
+  // makes nodes stay clickable across the range real GPS spans demand.
   const NODE_RADIUS = 28;
   const NODE_STROKE = 3.5;
   const ARROW_SIZE = 12;
@@ -29,6 +60,10 @@
     "#a87fff",
     "#ff8a5c",
   ];
+  // World units are metres now, so the usable zoom range has to stretch from a
+  // single junction down to a whole city.
+  const MIN_ZOOM = 0.02;
+  const MAX_ZOOM = 5;
   const CYAN = "#19c4d8";
   const CANVAS_BG = "#d9d9d9";
   const EDGE_OFFSET = 8; // Perpendicular offset for bidirectional edges
@@ -40,7 +75,7 @@
 
   // Preload arrow head image
   const arrowHeadImg = new Image();
-  arrowHeadImg.src = "/Images/arrow-head.png";
+  arrowHeadImg.src = "/images/arrow-head.png";
   arrowHeadImg.onload = () => draw();
 
   let hoveredNode = null;
@@ -183,11 +218,9 @@
       ctx.setLineDash([8, 6]);
       ctx.strokeStyle = "rgba(25, 196, 216, 0.6)";
       ctx.lineWidth = 2.5 / zoom;
+      const from = nodeXY(dragFromNode);
       ctx.beginPath();
-      ctx.moveTo(
-        dragFromNode.x_coord * settingsScale,
-        dragFromNode.y_coord * settingsScale,
-      );
+      ctx.moveTo(from.x, from.y);
       ctx.lineTo(worldMouse.x, worldMouse.y);
       ctx.stroke();
       ctx.restore();
@@ -227,36 +260,26 @@
   }
 
   function drawNodes() {
+    const r = NODE_RADIUS / zoom;
     for (const node of nodes) {
       const isHovered = hoveredNode === node;
       const flash = nodeFlashes[node.id_in_project];
       const hasFlash = flash && flash.alpha > 0;
+      const p = nodeXY(node);
 
       ctx.save();
 
       // Flash glow
       if (hasFlash) {
         ctx.beginPath();
-        ctx.arc(
-          node.x_coord * settingsScale,
-          node.y_coord * settingsScale,
-          NODE_RADIUS + 10,
-          0,
-          Math.PI * 2,
-        );
+        ctx.arc(p.x, p.y, r + 10 / zoom, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(231, 76, 94, ${flash.alpha * 0.35})`;
         ctx.fill();
       }
 
       // Outer circle
       ctx.beginPath();
-      ctx.arc(
-        node.x_coord * settingsScale,
-        node.y_coord * settingsScale,
-        NODE_RADIUS,
-        0,
-        Math.PI * 2,
-      );
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
 
       // Fill - white normally, light blue on hover
       if (hasFlash) {
@@ -267,7 +290,7 @@
       ctx.fill();
 
       // Stroke
-      ctx.lineWidth = NODE_STROKE;
+      ctx.lineWidth = NODE_STROKE / zoom;
       if (isHovered) {
         ctx.strokeStyle = "#14a8bd";
       } else {
@@ -277,20 +300,20 @@
 
       // Label
       ctx.fillStyle = isHovered ? "#14a8bd" : CYAN;
-      ctx.font = `bold ${NODE_RADIUS * 0.75}px Inter, sans-serif`;
+      ctx.font = `bold ${(NODE_RADIUS * 0.75) / zoom}px Inter, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(
-        node.id_in_project,
-        node.x_coord * settingsScale,
-        node.y_coord * settingsScale + 1,
-      );
+      ctx.fillText(node.id_in_project, p.x, p.y + 1 / zoom);
 
       ctx.restore();
     }
   }
 
   function drawConnections() {
+    const nodeRadius = NODE_RADIUS / zoom;
+    const arrowSize = ARROW_SIZE / zoom;
+    const edgeOffset = EDGE_OFFSET / zoom;
+
     for (let i = 0; i < connections.length; i++) {
       const conn = connections[i];
       const fromNode = getNodeById(conn.from_node_id);
@@ -302,10 +325,12 @@
       const cVal = congestionDisplay[conn.connection_id];
       const color = getCongestionColor(cVal);
 
-      const fX = fromNode.x_coord * settingsScale;
-      const fY = fromNode.y_coord * settingsScale;
-      const tX = toNode.x_coord * settingsScale;
-      const tY = toNode.y_coord * settingsScale;
+      const fromXY = nodeXY(fromNode);
+      const toXY = nodeXY(toNode);
+      const fX = fromXY.x;
+      const fY = fromXY.y;
+      const tX = toXY.x;
+      const tY = toXY.y;
 
       let dx = tX - fX;
       let dy = tY - fY;
@@ -321,7 +346,7 @@
 
       // Check if bidirectional - offset if so
       const isBidi = hasBidirectional(conn.from_node_id, conn.to_node_id);
-      const offset = isBidi ? EDGE_OFFSET : 0;
+      const offset = isBidi ? edgeOffset : 0;
 
       // Offset start and end points
       const fromX = fX + perpX * offset;
@@ -337,10 +362,10 @@
       const ouy = ody / olen;
 
       // Start and end points (clipped to node radius)
-      const x1 = fromX + oux * NODE_RADIUS;
-      const y1 = fromY + ouy * NODE_RADIUS;
-      const x2 = toX - oux * (NODE_RADIUS + ARROW_SIZE + 4);
-      const y2 = toY - ouy * (NODE_RADIUS + ARROW_SIZE + 4);
+      const x1 = fromX + oux * nodeRadius;
+      const y1 = fromY + ouy * nodeRadius;
+      const x2 = toX - oux * (nodeRadius + arrowSize + 4 / zoom);
+      const y2 = toY - ouy * (nodeRadius + arrowSize + 4 / zoom);
 
       ctx.save();
 
@@ -350,15 +375,15 @@
       ctx.lineTo(x2, y2);
       ctx.strokeStyle =
         isHovered || isSelected ? darkenColor(color, 0.3) : color;
-      ctx.lineWidth = isHovered || isSelected ? 4 : 3;
+      ctx.lineWidth = (isHovered || isSelected ? 4 : 3) / zoom;
       ctx.stroke();
 
       // Arrowhead (drawn with arrow-head.png)
       if (arrowHeadImg.complete && arrowHeadImg.naturalWidth > 0) {
-        const arrowTipX = toX - oux * (NODE_RADIUS + 2);
-        const arrowTipY = toY - ouy * (NODE_RADIUS + 2);
+        const arrowTipX = toX - oux * (nodeRadius + 2 / zoom);
+        const arrowTipY = toY - ouy * (nodeRadius + 2 / zoom);
         const angle = Math.atan2(ouy, oux);
-        const imgSize = ARROW_SIZE * 2;
+        const imgSize = arrowSize * 2;
 
         ctx.save();
         ctx.translate(arrowTipX, arrowTipY);
@@ -378,15 +403,16 @@
     return `rgb(${Math.round(r * (1 - amount))}, ${Math.round(g * (1 - amount))}, ${Math.round(b * (1 - amount))})`;
   }
 
-  // --- Hit Testing (in world coords) ---
+  // --- Hit Testing (in world coords, i.e. projected metres) ---
   function getNodeAt(wx, wy) {
+    // Same screen-constant radius the node is drawn at, so what looks
+    // clickable is clickable at every zoom level.
+    const radius = NODE_RADIUS / zoom;
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
-      const dist = Math.hypot(
-        wx - n.x_coord * settingsScale,
-        wy - n.y_coord * settingsScale,
-      );
-      if (dist <= NODE_RADIUS) return n;
+      const p = nodeXY(n);
+      const dist = Math.hypot(wx - p.x, wy - p.y);
+      if (dist <= radius) return n;
     }
     return null;
   }
@@ -399,10 +425,12 @@
       const toNode = getNodeById(conn.to_node_id);
       if (!fromNode || !toNode) continue;
 
-      const fX = fromNode.x_coord * settingsScale;
-      const fY = fromNode.y_coord * settingsScale;
-      const tX = toNode.x_coord * settingsScale;
-      const tY = toNode.y_coord * settingsScale;
+      const fromXY = nodeXY(fromNode);
+      const toXY = nodeXY(toNode);
+      const fX = fromXY.x;
+      const fY = fromXY.y;
+      const tX = toXY.x;
+      const tY = toXY.y;
 
       // Account for bidirectional offset
       const dx = tX - fX;
@@ -412,7 +440,7 @@
       const perpX = -(dy / len);
       const perpY = dx / len;
       const isBidi = hasBidirectional(conn.from_node_id, conn.to_node_id);
-      const offset = isBidi ? EDGE_OFFSET : 0;
+      const offset = isBidi ? EDGE_OFFSET / zoom : 0;
 
       const dist = distPointToSegment(
         wx,
@@ -548,7 +576,7 @@
       const sy = e.clientY - rect.top;
 
       const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-      const newZoom = Math.max(0.1, Math.min(5, zoom * zoomFactor));
+      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * zoomFactor));
 
       // Zoom centered on cursor
       panX = sx - (sx - panX) * (newZoom / zoom);
@@ -792,7 +820,41 @@
 
     nodes = await nodesRes.json();
     connections = await connsRes.json();
+    fitToNodes();
     draw();
+  }
+
+  /**
+   * Frames every node in view. Replaces what the old "Node Scale" slider was
+   * badly approximating: real projects span kilometres of projected metres, so
+   * a fixed 1 m = 1 px starting zoom would leave most of them off screen.
+   */
+  function fitToNodes() {
+    ensureProjection();
+    if (!projection || nodes.length === 0) return;
+
+    const points = nodes.map(nodeXY);
+    const minX = Math.min(...points.map((p) => p.x));
+    const maxX = Math.max(...points.map((p) => p.x));
+    const minY = Math.min(...points.map((p) => p.y));
+    const maxY = Math.max(...points.map((p) => p.y));
+
+    // Leave room for the node circles, which are drawn at a screen-constant
+    // radius outside the bounding box of the centres.
+    const padding = NODE_RADIUS * 3;
+    const spanX = maxX - minX;
+    const spanY = maxY - minY;
+    const fitZoom =
+      spanX === 0 && spanY === 0
+        ? 1
+        : Math.min(
+            (canvas.width - padding * 2) / (spanX || 1),
+            (canvas.height - padding * 2) / (spanY || 1),
+          );
+
+    zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitZoom));
+    panX = canvas.width / 2 - ((minX + maxX) / 2) * zoom;
+    panY = canvas.height / 2 - ((minY + maxY) / 2) * zoom;
   }
 
   // --- Socket.IO ---
@@ -809,12 +871,16 @@
 
   socket.on("node-added", (data) => {
     if (!getNodeById(data.node_id)) {
+      const isFirstNode = nodes.length === 0;
       nodes.push({
         node_id: data.node_id,
         id_in_project: data.id_in_project,
-        x_coord: data.x_coord,
-        y_coord: data.y_coord,
+        latitude: data.latitude,
+        longitude: data.longitude,
       });
+      // A project that started empty had no origin to project against; the
+      // first node to arrive establishes one, and the view frames it.
+      if (isFirstNode) fitToNodes();
       draw();
     }
   });
@@ -904,8 +970,6 @@
   const settingsClose = document.getElementById("settings-close");
   const copyApiKeyBtn = document.getElementById("copy-api-key");
   const apiKeyInput = document.getElementById("api-key-input");
-  const scaleSlider = document.getElementById("scale-slider");
-  const scaleVal = document.getElementById("scale-val");
 
   // Populate API Key
   if (apiKeyInput) apiKeyInput.value = apiKey;
@@ -929,14 +993,6 @@
       apiKeyInput.select();
       apiKeyInput.setSelectionRange(0, 99999); // For mobile devices
       navigator.clipboard.writeText(apiKeyInput.value);
-    });
-  }
-
-  if (scaleSlider) {
-    scaleSlider.addEventListener("input", (e) => {
-      settingsScale = parseFloat(e.target.value);
-      if (scaleVal) scaleVal.textContent = settingsScale.toFixed(1);
-      draw();
     });
   }
 

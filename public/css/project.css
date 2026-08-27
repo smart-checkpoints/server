@@ -707,10 +707,6 @@ body {
   overflow-y: auto;
 }
 
-.setting-item {
-  margin-bottom: 24px;
-}
-
 .setting-label {
   display: block;
   font-size: 13px;
@@ -753,11 +749,5 @@ body {
 #copy-api-key:hover {
   border-color: var(--cyan);
   color: var(--cyan);
-}
-
-#scale-slider {
-  width: 100%;
-  margin-top: 8px;
-  accent-color: var(--cyan);
 }
 

@@ -8,7 +8,7 @@
   left: 0;
   width: 32px;
   height: 32px;
-  background-image: url("/Images/cursor-mini.png");
+  background-image: url("/images/cursor-mini.png");
   background-size: contain;
   background-repeat: no-repeat;
   pointer-events: none;

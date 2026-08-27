@@ -1,6 +1,7 @@
 const sqlite = require("sqlite3");
+const { makeProjection } = require("./geo.js");
 
-function createDatabase(path = "Server/database.db") {
+function createDatabase(path = "server/database.db") {
   const db = new sqlite.Database(path);
   // Enable WAL mode for better concurrency under high write load
   db.run("PRAGMA journal_mode = WAL");
@@ -8,76 +9,187 @@ function createDatabase(path = "Server/database.db") {
   return db;
 }
 
-function initializeDatabase(db) {
-  db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS projects (
-        project_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_name TEXT,
-        api_key TEXT,
-        node_count INTEGER DEFAULT 0,
-        connection_count INTEGER DEFAULT 0
-    )`);
+/**
+ * Renames the legacy `nodes.x_coord` / `nodes.y_coord` columns to
+ * `longitude` / `latitude`. The existing mapping was x = longitude and
+ * y = latitude, so the rename preserves meaning without swapping values.
+ *
+ * Idempotent: a database already carrying the new names is left alone. Unlike
+ * the other migrations in this file it does NOT swallow errors — a
+ * half-renamed nodes table means every coordinate read is silently wrong, so
+ * it must stop startup rather than run on.
+ */
+function migrateNodeCoordinateColumns(db) {
+  return new Promise((resolve, reject) => {
+    db.all("PRAGMA table_info(nodes)", (err, columns) => {
+      if (err) return reject(err);
 
-    db.run(`CREATE TABLE IF NOT EXISTS nodes (
-        node_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER,
-        id_in_project INTEGER,
-        x_coord REAL,
-        y_coord REAL,
-        FOREIGN KEY(project_id) REFERENCES projects(project_id)
-    )`);
+      const names = new Set((columns || []).map((c) => c.name));
+      const hasOldLng = names.has("x_coord");
+      const hasOldLat = names.has("y_coord");
+      const hasNewLng = names.has("longitude");
+      const hasNewLat = names.has("latitude");
 
-    db.run(`CREATE TABLE IF NOT EXISTS connections (
-        connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER,
-        from_node_id INTEGER, 
-        to_node_id INTEGER,
-        distance REAL,
-        speed_limit REAL,
-        FOREIGN KEY(project_id) REFERENCES projects(project_id),
-        FOREIGN KEY(from_node_id) REFERENCES nodes(node_id),
-        FOREIGN KEY(to_node_id) REFERENCES nodes(node_id)
-    )`);
+      if (hasNewLng && hasNewLat && !hasOldLng && !hasOldLat) {
+        return resolve(false); // already migrated
+      }
 
-    db.run(`CREATE TABLE IF NOT EXISTS car_data (
-        car_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER,
-        car_plate TEXT,
-        last_sighting_time INT,
-        last_sighting_node_id INTEGER,
-        FOREIGN KEY(project_id) REFERENCES projects(project_id),
-        FOREIGN KEY(last_sighting_node_id) REFERENCES nodes(node_id)
-    )`);
+      if (hasOldLng !== hasOldLat || hasNewLng !== hasNewLat) {
+        return reject(
+          new Error(
+            "nodes table is half-renamed: found columns " +
+              `[${[...names].join(", ")}]. Expected either ` +
+              "(x_coord, y_coord) or (longitude, latitude). Refusing to start " +
+              "— fix the schema by hand before serving coordinate data.",
+          ),
+        );
+      }
 
-    db.run(`CREATE TABLE IF NOT EXISTS violations (
-        violation_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        project_id INTEGER,
-        car_plate TEXT,
-        car_speed REAL,
-        timestamp TEXT,
-        FOREIGN KEY(project_id) REFERENCES projects(project_id)
-    )`);
+      if (!hasOldLng && !hasOldLat) {
+        return reject(
+          new Error(
+            "nodes table has no coordinate columns at all: found " +
+              `[${[...names].join(", ")}]. Refusing to start.`,
+          ),
+        );
+      }
 
-    // Migration for existing databases
-    db.run(`CREATE TABLE IF NOT EXISTS traversals (
-        traversal_id  INTEGER PRIMARY KEY AUTOINCREMENT,
-        connection_id INTEGER,
-        delta_t       REAL,
-        timestamp     TEXT,
-        FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
-    )`);
-
-    // Migration for existing databases
-    db.run(
-      `ALTER TABLE projects ADD COLUMN node_count INTEGER DEFAULT 0`,
-      () => {},
-    );
-    db.run(
-      `ALTER TABLE projects ADD COLUMN connection_count INTEGER DEFAULT 0`,
-      () => {},
-    );
-    db.run(`ALTER TABLE nodes ADD COLUMN id_in_project INTEGER`, () => {});
+      db.run("ALTER TABLE nodes RENAME COLUMN x_coord TO longitude", (e1) => {
+        if (e1) return reject(e1);
+        db.run("ALTER TABLE nodes RENAME COLUMN y_coord TO latitude", (e2) => {
+          if (e2) return reject(e2);
+          console.log(
+            "🗺️  Migrated nodes.x_coord -> longitude, nodes.y_coord -> latitude",
+          );
+          resolve(true);
+        });
+      });
+    });
   });
+}
+
+function initializeDatabase(db) {
+  return new Promise((resolve, reject) => {
+    db.serialize(() => {
+      createTables(db);
+      // Coordinate rename runs last so the CREATE TABLE statements above have
+      // already settled, and its failure rejects rather than being swallowed.
+      db.run("SELECT 1", (err) => {
+        if (err) return reject(err);
+        migrateNodeCoordinateColumns(db).then(resolve, reject);
+      });
+    });
+  });
+}
+
+function createTables(db) {
+  db.run(`CREATE TABLE IF NOT EXISTS projects (
+      project_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_name TEXT,
+      api_key TEXT,
+      node_count INTEGER DEFAULT 0,
+      connection_count INTEGER DEFAULT 0
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS nodes (
+      node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER,
+      id_in_project INTEGER,
+      longitude REAL,
+      latitude REAL,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS connections (
+      connection_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER,
+      from_node_id INTEGER, 
+      to_node_id INTEGER,
+      distance REAL,
+      speed_limit REAL,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id),
+      FOREIGN KEY(from_node_id) REFERENCES nodes(node_id),
+      FOREIGN KEY(to_node_id) REFERENCES nodes(node_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS car_data (
+      car_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER,
+      car_plate TEXT,
+      last_sighting_time INT,
+      last_sighting_node_id INTEGER,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id),
+      FOREIGN KEY(last_sighting_node_id) REFERENCES nodes(node_id)
+  )`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS violations (
+      violation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER,
+      car_plate TEXT,
+      car_speed REAL,
+      timestamp TEXT,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id)
+  )`);
+
+  // Migration for existing databases
+  db.run(`CREATE TABLE IF NOT EXISTS traversals (
+      traversal_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+      connection_id INTEGER,
+      delta_t       REAL,
+      timestamp     TEXT,
+      FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
+  )`);
+
+  // Migration for existing databases
+  db.run(
+    `ALTER TABLE projects ADD COLUMN node_count INTEGER DEFAULT 0`,
+    () => {},
+  );
+  db.run(
+    `ALTER TABLE projects ADD COLUMN connection_count INTEGER DEFAULT 0`,
+    () => {},
+  );
+  db.run(`ALTER TABLE nodes ADD COLUMN id_in_project INTEGER`, () => {});
+}
+
+/**
+ * Projects `{ id_in_project, latitude, longitude }` rows onto the local
+ * tangent plane and rescales them into the unit square, preserving aspect
+ * ratio and north-up orientation. Returns `{ id, x, y }` with x/y in [0, 1].
+ *
+ * Rows with unusable coordinates are dropped rather than poisoning the
+ * bounding box with NaN.
+ */
+function normaliseNodeShape(nodes) {
+  const usable = nodes.filter(
+    (n) => Number.isFinite(n.latitude) && Number.isFinite(n.longitude),
+  );
+  if (usable.length === 0) return [];
+
+  const originLat =
+    usable.reduce((sum, n) => sum + n.latitude, 0) / usable.length;
+  const originLng =
+    usable.reduce((sum, n) => sum + n.longitude, 0) / usable.length;
+  const projection = makeProjection(originLat, originLng);
+
+  const projected = usable.map((n) => ({
+    id: n.id_in_project,
+    ...projection.project(n.latitude, n.longitude),
+  }));
+
+  const xs = projected.map((p) => p.x);
+  const ys = projected.map((p) => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  // One divisor for both axes keeps the drawing proportional; using each
+  // axis's own range would stretch the graph to fill the box.
+  const span = Math.max(Math.max(...xs) - minX, Math.max(...ys) - minY) || 1;
+
+  return projected.map((p) => ({
+    id: p.id,
+    x: (p.x - minX) / span,
+    y: (p.y - minY) / span,
+  }));
 }
 
 function createPlaceholders(object) {
@@ -178,15 +290,19 @@ const statements = {
     });
   },
 
-  createNode: async (projectId, xCoord, yCoord, db) => {
+  /**
+   * @param {number} latitude  WGS84 latitude in degrees, +/-90.
+   * @param {number} longitude WGS84 longitude in degrees, +/-180.
+   */
+  createNode: async (projectId, latitude, longitude, db) => {
     const idInProject = await statements.getNextIdInProject(projectId, db);
     const nodeId = await addEntry(
       "nodes",
       {
         project_id: projectId,
         id_in_project: idInProject,
-        x_coord: xCoord,
-        y_coord: yCoord,
+        latitude: latitude,
+        longitude: longitude,
       },
       db,
     );
@@ -334,7 +450,7 @@ const statements = {
   getProjectNodes: (projectId, db) => {
     return new Promise((resolve, reject) => {
       db.all(
-        "SELECT node_id, id_in_project, x_coord, y_coord FROM nodes WHERE project_id = ?",
+        "SELECT node_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ?",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -412,7 +528,7 @@ const statements = {
   getNodeByIdInProject: (projectId, idInProject, db) => {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT * FROM nodes WHERE project_id = ? AND id_in_project = ?",
+        "SELECT node_id, project_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ? AND id_in_project = ?",
         [projectId, idInProject],
         (err, row) => {
           if (err) reject(err);
@@ -424,10 +540,14 @@ const statements = {
 
   getNodeByNodeId: (nodeId, db) => {
     return new Promise((resolve, reject) => {
-      db.get("SELECT * FROM nodes WHERE node_id = ?", [nodeId], (err, row) => {
-        if (err) reject(err);
-        else resolve(row || null);
-      });
+      db.get(
+        "SELECT node_id, project_id, id_in_project, latitude, longitude FROM nodes WHERE node_id = ?",
+        [nodeId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row || null);
+        },
+      );
     });
   },
 
@@ -457,12 +577,22 @@ const statements = {
     });
   },
 
+  /**
+   * Shape-only geometry for the dashboard thumbnails.
+   *
+   * This endpoint is unauthenticated, and node coordinates are the GPS
+   * positions of real cameras, so no absolute position leaves here. The nodes
+   * are projected to the local tangent plane (north up, correct aspect ratio)
+   * and then normalised into the unit square. Both axes are divided by the
+   * SAME span, so the drawing stays proportional to real distances; origin and
+   * scale are discarded, which is everything the thumbnail never needed.
+   */
   getThumbnailData: (projectId, db) => {
     return new Promise(async (resolve, reject) => {
       try {
         const nodes = await new Promise((res, rej) => {
           db.all(
-            "SELECT id_in_project, x_coord, y_coord FROM nodes WHERE project_id = ?",
+            "SELECT id_in_project, latitude, longitude FROM nodes WHERE project_id = ?",
             [projectId],
             (err, rows) => (err ? rej(err) : res(rows || [])),
           );
@@ -474,12 +604,9 @@ const statements = {
             (err, rows) => (err ? rej(err) : res(rows || [])),
           );
         });
-        // Map from_node_id/to_node_id to id_in_project for client
-        const nodeMap = {};
-        const nodesOut = [];
-        for (const n of nodes) {
-          nodesOut.push({ id: n.id_in_project, x: n.x_coord, y: n.y_coord });
-        }
+
+        const nodesOut = normaliseNodeShape(nodes);
+
         // We need node_id -> id_in_project map for connections
         const nodeIdMap = await new Promise((res, rej) => {
           db.all(

@@ -4,16 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Smart Checkpoints — Project</title>
-    <link rel="icon" href="/Images/favicon.ico" />
+    <link rel="icon" href="/images/favicon.ico" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/Css/project.css" />
-    <link rel="stylesheet" href="/Css/cursor.css" />
-    <script src="/Js/cursor.js" defer></script>
+    <link rel="stylesheet" href="/css/project.css" />
+    <link rel="stylesheet" href="/css/cursor.css" />
+    <script src="/js/cursor.js" defer></script>
   </head>
   <body>
     <div class="custom-cursor"></div>
@@ -22,7 +22,7 @@
       <div class="header-left">
         <a href="/" class="logo">
           <img
-            src="/Images/logo.png"
+            src="/images/logo.png"
             alt="Smart Checkpoints"
             class="logo-img"
           />
@@ -97,20 +97,6 @@
               ></path>
             </svg>
           </button>
-        </div>
-
-        <div class="setting-item">
-          <label for="scale-slider" class="setting-label"
-            >Node Scale (<span id="scale-val">1.0</span>x)</label
-          >
-          <input
-            type="range"
-            id="scale-slider"
-            min="1"
-            max="10"
-            step="0.5"
-            value="1"
-          />
         </div>
       </div>
     </div>
@@ -204,6 +190,7 @@
     </button>
 
     <script src="/socket.io/socket.io.js"></script>
-    <script src="/Js/project.js"></script>
+    <script src="/js/geo.js"></script>
+    <script src="/js/project.js"></script>
   </body>
 </html>

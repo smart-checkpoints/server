@@ -1,5 +1,5 @@
 // ==============================
-// Smart Checkpoints — Canvas
+// Smart Checkpoints - Canvas
 // ==============================
 
 (() => {
@@ -258,7 +258,7 @@
         Math.PI * 2,
       );
 
-      // Fill — white normally, light blue on hover
+      // Fill - white normally, light blue on hover
       if (hasFlash) {
         ctx.fillStyle = `rgba(231, 76, 94, ${0.15 + flash.alpha * 0.3})`;
       } else {
@@ -319,7 +319,7 @@
       const perpX = -uy;
       const perpY = ux;
 
-      // Check if bidirectional — offset if so
+      // Check if bidirectional - offset if so
       const isBidi = hasBidirectional(conn.from_node_id, conn.to_node_id);
       const offset = isBidi ? EDGE_OFFSET : 0;
 
@@ -670,7 +670,7 @@
       if (isNaN(distance)) return;
       payload.distance = distance;
     }
-    // If driver connected, omit distance — server will request from driver
+    // If driver connected, omit distance - server will request from driver
 
     socket.emit("create-connection", payload);
 

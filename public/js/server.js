@@ -35,7 +35,7 @@ server.on("upgrade", (request, socket, head) => {
     });
   } else {
     // Let Socket.IO handle its own upgrades
-    // Do nothing here — Socket.IO hooks into the server internally
+    // Do nothing here - Socket.IO hooks into the server internally
   }
 });
 

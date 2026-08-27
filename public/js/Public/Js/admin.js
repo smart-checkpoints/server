@@ -1,5 +1,5 @@
 // ==============================
-// Smart Checkpoints — Admin
+// Smart Checkpoints - Admin
 // ==============================
 
 const passwordInput = document.getElementById("admin-password");

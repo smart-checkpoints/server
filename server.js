@@ -18,6 +18,11 @@ const { Server } = require("socket.io");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const { parseCoordinate, isValidLatLng } = require("./geo.js");
+const {
+  publicDir,
+  detectConsoleBuild,
+  NOT_BUILT_MESSAGE,
+} = require("./console-build.js");
 
 // Every coordinate entering the system is WGS84 degrees. Rejecting here is the
 // only thing standing between a typo and enforcement built on a wrong position.
@@ -201,46 +206,16 @@ app.use(express.json());
 // same stack and the same design system as smartcheckpoints.xyz, and it talks
 // to this process over the REST API and the Socket.IO channel below; there is
 // no second server involved.
-const publicDir = path.join(__dirname, "public");
-
-const NOT_BUILT_MESSAGE =
-  "The Smart Checkpoints console has not been built.\n\n" +
-  "Run this in the server directory, then reload:\n\n" +
-  "    npm run build\n\n" +
-  "public/ is generated from console/ and is not in version control, so a\n" +
-  "fresh clone has to build it once. The REST API and both realtime channels\n" +
-  "work without it; only these pages are missing.\n";
-
-/**
- * Whether `public/` holds a real console build.
- *
- * An index.html on its own is not enough to answer that. A half-copied or
- * stale directory has one, and then every page loads with no stylesheet and no
- * script and looks like a bug in the console rather than a missing build step.
- * Every route the export produces has to be there, `_next` included, or the
- * server says plainly that it is not built.
- */
-function detectConsoleBuild() {
-  const required = [
-    "index.html",
-    "_next",
-    path.join("project", "index.html"),
-    path.join("admin", "index.html"),
-  ];
-  const missing = required.filter(
-    (entry) => !fs.existsSync(path.join(publicDir, entry)),
-  );
-  return { built: missing.length === 0, missing };
-}
-
 const { built: consoleBuilt, missing: missingFromBuild } = detectConsoleBuild();
 
 if (!consoleBuilt) {
   console.warn(
-    `⚠️  The console has not been built: public/ is missing ${missingFromBuild.join(", ")}.\n` +
-      "    The REST API and both realtime channels are running normally;\n" +
-      "    only the browser pages are missing.\n" +
+    [
+      `⚠️  The console has not been built: public/ is missing ${missingFromBuild.join(", ")}.`,
+      "    The REST API and both realtime channels are running normally;",
+      "    only the browser pages are missing.",
       "    Run `npm run build` in this directory to build them.",
+    ].join("\n"),
   );
 }
 

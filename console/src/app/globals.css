@@ -243,6 +243,71 @@ html::-webkit-scrollbar-track {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Rail grids.
+
+   Some sections are laid out as cells one pixel apart over a border-coloured
+   ground, so the divisions between them read as hairlines rather than as gaps.
+   The light that follows the pointer along those hairlines is the one moving
+   hover gesture on the site, and it is deliberately on the lines rather than
+   on the cells: nothing here lifts, glows, or casts a shadow on hover.
+
+   The ring is drawn by masking a full-bleed box against its own content box,
+   which leaves exactly the one pixel of border and nothing else.
+   `mask-composite` needs both the standard and the WebKit spelling to reach
+   every browser.
+   --------------------------------------------------------------------------- */
+.rail-spotlight {
+  position: absolute;
+  inset: -1px;
+  padding: 1px;
+  border-radius: inherit;
+  pointer-events: none;
+  overflow: hidden;
+  contain: layout style paint;
+
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+
+  opacity: 0;
+  transition: opacity 700ms ease;
+}
+
+/* Quick to arrive, slow to leave. */
+.rail-spotlight.is-lit {
+  opacity: 1;
+  transition-duration: 140ms;
+}
+
+.rail-spotlight > * {
+  position: absolute;
+  width: 26rem;
+  aspect-ratio: 1;
+  border-radius: 9999px;
+  background: radial-gradient(circle closest-side at center, var(--cyan), transparent);
+  transform: translate(-9999px, -9999px);
+}
+
+.rail-spotlight.is-lit > * {
+  will-change: transform;
+}
+
+/* A cell that is a link opens its own arrow from anywhere inside it, using the
+   same gesture and the same curve the buttons do. */
+.rail-link:hover .btn-arrow,
+.rail-link:focus-visible .btn-arrow {
+  width: 1.1em;
+  margin-left: 0.6rem;
+  opacity: 1;
+  transform: translateX(0);
+}
+
 /* Infrastructure software. If the reader asked for stillness, give them
    stillness, including the looping hero and diagram animations. */
 @media (prefers-reduced-motion: reduce) {

@@ -18,10 +18,12 @@ const { existsSync, rmSync, cpSync, mkdirSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
 
-const root = path.join(__dirname, "..");
-const consoleDir = path.join(root, "console");
-const exportDir = path.join(consoleDir, "out");
-const publicDir = path.join(root, "public");
+const {
+  consoleDir,
+  exportDir,
+  publicDir,
+  detectConsoleBuild,
+} = require("../console-build.js");
 
 /**
  * Runs one npm command in a directory.
@@ -63,5 +65,13 @@ if (!existsSync(exportDir)) {
 rmSync(publicDir, { recursive: true, force: true });
 mkdirSync(publicDir, { recursive: true });
 cpSync(exportDir, publicDir, { recursive: true });
+
+// Confirm the result against the same check the server applies at start up, so
+// a copy that only half succeeded fails here rather than at the first request.
+const { built, missing } = detectConsoleBuild();
+if (!built) {
+  console.error(`The copy into public/ is incomplete: missing ${missing.join(", ")}.`);
+  process.exit(1);
+}
 
 console.log(`Console installed at ${publicDir}`);

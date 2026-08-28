@@ -202,13 +202,45 @@ app.use(express.json());
 // to this process over the REST API and the Socket.IO channel below; there is
 // no second server involved.
 const publicDir = path.join(__dirname, "public");
-const consoleBuilt = fs.existsSync(path.join(publicDir, "index.html"));
+
+const NOT_BUILT_MESSAGE =
+  "The Smart Checkpoints console has not been built.\n\n" +
+  "Run this in the server directory, then reload:\n\n" +
+  "    npm run build\n\n" +
+  "public/ is generated from console/ and is not in version control, so a\n" +
+  "fresh clone has to build it once. The REST API and both realtime channels\n" +
+  "work without it; only these pages are missing.\n";
+
+/**
+ * Whether `public/` holds a real console build.
+ *
+ * An index.html on its own is not enough to answer that. A half-copied or
+ * stale directory has one, and then every page loads with no stylesheet and no
+ * script and looks like a bug in the console rather than a missing build step.
+ * Every route the export produces has to be there, `_next` included, or the
+ * server says plainly that it is not built.
+ */
+function detectConsoleBuild() {
+  const required = [
+    "index.html",
+    "_next",
+    path.join("project", "index.html"),
+    path.join("admin", "index.html"),
+  ];
+  const missing = required.filter(
+    (entry) => !fs.existsSync(path.join(publicDir, entry)),
+  );
+  return { built: missing.length === 0, missing };
+}
+
+const { built: consoleBuilt, missing: missingFromBuild } = detectConsoleBuild();
 
 if (!consoleBuilt) {
   console.warn(
-    "⚠️  The console has not been built. The REST API and both realtime\n" +
-      "    channels are running normally; only the pages are missing.\n" +
-      "    Run `npm run build` in this directory to build it.",
+    `⚠️  The console has not been built: public/ is missing ${missingFromBuild.join(", ")}.\n` +
+      "    The REST API and both realtime channels are running normally;\n" +
+      "    only the browser pages are missing.\n" +
+      "    Run `npm run build` in this directory to build them.",
   );
 }
 
@@ -223,18 +255,24 @@ if (!consoleBuilt) {
 function sendConsolePage(route) {
   return (req, res) => {
     if (!consoleBuilt) {
-      return res
-        .status(503)
-        .type("text/plain")
-        .send(
-          "The Smart Checkpoints console has not been built.\n" +
-            "Run `npm run build` in the server directory, then reload.\n",
-        );
+      return res.status(503).type("text/plain").send(NOT_BUILT_MESSAGE);
     }
-    res.sendFile(path.join(publicDir, route, "index.html"));
+
+    // A file that vanished after startup, or a directory that was only ever
+    // half copied, must not reach the browser as an ENOENT stack trace with an
+    // absolute path in it. Say the same thing the startup warning says.
+    res.sendFile(path.join(publicDir, route, "index.html"), (err) => {
+      if (!err || res.headersSent) return;
+      console.warn(`⚠️  Could not serve /${route}: ${err.message}`);
+      res.status(503).type("text/plain").send(NOT_BUILT_MESSAGE);
+    });
   };
 }
 
+// The root is served explicitly too. Left to `express.static` alone, an
+// unbuilt or half-built public/ answers it with Express's own 404 rather than
+// with the one message that tells the reader what to do about it.
+app.get("/", sendConsolePage(""));
 app.get("/project", sendConsolePage("project"));
 app.get("/admin", sendConsolePage("admin"));
 

@@ -12,6 +12,7 @@ const {
 const os = require("os");
 require("dotenv").config({ quiet: true });
 const path = require("path");
+const fs = require("fs");
 const http = require("http");
 const { Server } = require("socket.io");
 const WebSocket = require("ws");
@@ -22,6 +23,11 @@ const { parseCoordinate, isValidLatLng } = require("./geo.js");
 // only thing standing between a typo and enforcement built on a wrong position.
 const INVALID_COORDINATES =
   "latitude must be a finite number within +/-90 and longitude within +/-180";
+
+// One documentation site for the whole ecosystem: the server, the console, the
+// website and every distance driver all point here rather than each keeping a
+// copy of the protocol that slowly stops being true.
+const DOCS_URL = "https://docs.smartcheckpoints.xyz";
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -187,19 +193,64 @@ function requestDistanceFromDriver(projectId, fromIdInProject, toIdInProject) {
 const db = createDatabase(path.join(__dirname, "database.db"));
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 
-// --- Serve pages ---
-app.get("/project", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "project.html"));
-});
+// --- The operator console ---
+//
+// `public/` is not written by hand. It is the static export of the Next.js
+// app in `console/`, installed there by `npm run build`. The console is the
+// same stack and the same design system as smartcheckpoints.xyz, and it talks
+// to this process over the REST API and the Socket.IO channel below; there is
+// no second server involved.
+const publicDir = path.join(__dirname, "public");
+const consoleBuilt = fs.existsSync(path.join(publicDir, "index.html"));
 
+if (!consoleBuilt) {
+  console.warn(
+    "⚠️  The console has not been built. The REST API and both realtime\n" +
+      "    channels are running normally; only the pages are missing.\n" +
+      "    Run `npm run build` in this directory to build it.",
+  );
+}
+
+/**
+ * Serves one exported console page.
+ *
+ * The export writes `<route>/index.html`. These routes are registered ahead of
+ * `express.static` so `/admin` serves the page directly; left to itself, static
+ * answers the slashless form with a 301 to `/admin/` and makes every page load
+ * a round trip longer.
+ */
+function sendConsolePage(route) {
+  return (req, res) => {
+    if (!consoleBuilt) {
+      return res
+        .status(503)
+        .type("text/plain")
+        .send(
+          "The Smart Checkpoints console has not been built.\n" +
+            "Run `npm run build` in the server directory, then reload.\n",
+        );
+    }
+    res.sendFile(path.join(publicDir, route, "index.html"));
+  };
+}
+
+app.get("/project", sendConsolePage("project"));
+app.get("/admin", sendConsolePage("admin"));
+
+if (consoleBuilt) {
+  app.use(express.static(publicDir));
+}
+
+// The documentation lives in one place for the whole ecosystem, and this is
+// not it. The server used to carry a hand-maintained copy of the API reference
+// that drifted from the published one; this redirect is what replaced it.
 app.get("/documentation", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "documentation.html"));
+  res.redirect(308, DOCS_URL);
 });
 
-app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "admin.html"));
+app.get("/documentation/*splat", (req, res) => {
+  res.redirect(308, DOCS_URL);
 });
 
 // --- REST Endpoints ---
@@ -446,9 +497,46 @@ app.get("/project/:id/violations", authenticateAPIKey(db), async (req, res) => {
 });
 
 // --- Admin endpoints ---
+//
+// These list every project on the server together with its API key, and a
+// project API key is full read/write on that project's graph and its violation
+// records. So the gate fails closed: with no ADMIN_PASSWORD configured the
+// endpoints are off, rather than comparing an absent password against an
+// absent environment variable and finding them equal.
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const adminEnabled =
+  typeof ADMIN_PASSWORD === "string" && ADMIN_PASSWORD.length > 0;
+
+if (!adminEnabled) {
+  console.warn(
+    "⚠️  ADMIN_PASSWORD is not set, so /admin is disabled on this server.\n" +
+      "    Set it in .env to enable administration. See .env.example.",
+  );
+}
+
+/** Compares digests so neither the password nor its length leaks by timing. */
+function isAdminPassword(candidate) {
+  if (!adminEnabled || typeof candidate !== "string" || candidate === "") {
+    return false;
+  }
+  const given = crypto.createHash("sha256").update(candidate).digest();
+  const expected = crypto.createHash("sha256").update(ADMIN_PASSWORD).digest();
+  return crypto.timingSafeEqual(given, expected);
+}
+
+/** Rejects the request and returns true when administration is unavailable. */
+function refuseIfAdminDisabled(res) {
+  if (adminEnabled) return false;
+  res.status(503).json({
+    error:
+      "Administration is disabled on this server: ADMIN_PASSWORD is not set.",
+  });
+  return true;
+}
+
 app.post("/admin/auth", (req, res) => {
-  const password = req.body.password;
-  if (password === process.env.ADMIN_PASSWORD) {
+  if (refuseIfAdminDisabled(res)) return;
+  if (isAdminPassword(req.body.password)) {
     res.json({ success: true });
   } else {
     res.status(401).json({ error: "Invalid password" });
@@ -466,9 +554,8 @@ app.get(
 );
 
 app.get("/admin/projects", async (req, res) => {
-  // Simple password check via header
-  const password = req.headers["x-admin-password"];
-  if (password !== process.env.ADMIN_PASSWORD) {
+  if (refuseIfAdminDisabled(res)) return;
+  if (!isAdminPassword(req.headers["x-admin-password"])) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   try {
@@ -582,7 +669,11 @@ initializeDatabase(db)
   .then(() => {
     server.listen(port);
     console.log(
-      `🎧 Listening on localhost:${port}\n📌 Local Network Path: ${getWifiAddress()}:${port}`,
+      `🎧 Listening on localhost:${port}\n` +
+        `📌 Local Network Path: ${getWifiAddress()}:${port}\n` +
+        `🖥️  Console: http://localhost:${port}/` +
+        `${consoleBuilt ? "" : "  (not built, run: npm run build)"}\n` +
+        `📚 Docs: ${DOCS_URL}`,
     );
     setInterval(broadcastCongestion, CONGESTION_INTERVAL_MS);
   })

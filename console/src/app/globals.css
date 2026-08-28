@@ -1,0 +1,335 @@
+/* ---------------------------------------------------------------------------
+   The Smart Checkpoints design system.
+
+   This file is the console's copy of the tokens, type scale and component
+   styles that smartcheckpoints.xyz runs on. The two are meant to stay
+   byte-identical down to the CONSOLE section at the bottom: one accent, one
+   set of greys, one type scale, one hover gesture across the whole ecosystem.
+   Change a token here only by changing it in the web repo first.
+   --------------------------------------------------------------------------- */
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   Design tokens. Every colour, shadow and type step on the site resolves to
+   one of these. The greys are shifted a few degrees toward the brand cyan so
+   the page reads as one temperature rather than a neutral wash.
+   --------------------------------------------------------------------------- */
+:root {
+  /* Accent. Cyan is the only accent on the site. */
+  --cyan: #19c4d8;
+  --cyan-hover: #15aabb;
+  --cyan-dark: #0e7f8c;
+  --cyan-glow: rgba(25, 196, 216, 0.12);
+
+  /* Ground */
+  --bg: #eceff0;
+  --bg-subtle: #e3e7e9;
+  --surface: #ffffff;
+  --surface-hover: #f6f8f9;
+  --border: #dde3e5;
+  --border-strong: #c8d1d4;
+
+  /* Ink */
+  --text: #1e2628;
+  --text-dim: #6b7679;
+
+  /* Status only, never decoration */
+  --green: #4ecb71;
+  --yellow: #f7c948;
+  --red: #e74c5e;
+
+  /* Depth. Layered, tinted with the ink colour rather than pure black. */
+  --shadow-sm: 0 1px 2px rgb(30 38 40 / 0.04), 0 1px 3px rgb(30 38 40 / 0.06);
+  --shadow-md: 0 2px 4px rgb(30 38 40 / 0.04), 0 8px 20px rgb(30 38 40 / 0.08);
+  --shadow-lg: 0 4px 8px rgb(30 38 40 / 0.05), 0 16px 36px rgb(30 38 40 / 0.10),
+    0 32px 64px rgb(30 38 40 / 0.06);
+}
+
+@theme inline {
+  /* Drop Tailwind's stock palette so only the tokens above are reachable. */
+  --color-*: initial;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-cyan: var(--cyan);
+  --color-cyan-hover: var(--cyan-hover);
+  --color-cyan-dark: var(--cyan-dark);
+  --color-cyan-glow: var(--cyan-glow);
+
+  --color-bg: var(--bg);
+  --color-bg-subtle: var(--bg-subtle);
+  --color-surface: var(--surface);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-text: var(--text);
+  --color-text-dim: var(--text-dim);
+
+  --color-green: var(--green);
+  --color-yellow: var(--yellow);
+  --color-red: var(--red);
+
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --font-display: var(--font-space-grotesk);
+  --font-sans: var(--font-inter);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+/* ---------------------------------------------------------------------------
+   Type scale. Display steps carry their own line height and tracking, so a
+   heading only ever needs its step class.
+   --------------------------------------------------------------------------- */
+@theme {
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.55;
+  --text-base: 1rem;
+  --text-base--line-height: 1.7;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.7;
+  --text-xl: 1.25rem;
+  --text-xl--line-height: 1.65;
+
+  --text-2xl: 1.5rem;
+  --text-2xl--line-height: 1.25;
+  --text-2xl--letter-spacing: -0.02em;
+  --text-3xl: 1.875rem;
+  --text-3xl--line-height: 1.18;
+  --text-3xl--letter-spacing: -0.022em;
+  --text-4xl: 2.125rem;
+  --text-4xl--line-height: 1.1;
+  --text-4xl--letter-spacing: -0.028em;
+  --text-5xl: 2.75rem;
+  --text-5xl--line-height: 1.06;
+  --text-5xl--letter-spacing: -0.032em;
+  --text-6xl: 3.375rem;
+  --text-6xl--line-height: 1.02;
+  --text-6xl--letter-spacing: -0.036em;
+  --text-7xl: 4rem;
+  --text-7xl--line-height: 0.98;
+  --text-7xl--letter-spacing: -0.04em;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Anchored sections clear the sticky header. */
+  scroll-padding-top: 5.5rem;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--text);
+}
+
+::selection {
+  background-color: var(--cyan);
+  color: var(--surface);
+}
+
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   Scrollbars. Thin, in the palette, and the same everywhere: the page, the
+   code blocks, the mobile menu. The thumb picks up cyan on hover.
+   --------------------------------------------------------------------------- */
+html {
+  /* Reserve the gutter so nothing reflows when a page grows past one screen. */
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background-color: transparent;
+}
+
+html::-webkit-scrollbar-track {
+  background-color: var(--bg-subtle);
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--cyan);
+}
+
+::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+/* ---------------------------------------------------------------------------
+   Buttons. Kept in the components layer so Tailwind utilities passed through
+   `className` still win.
+
+   The hover is an arrow opening out of zero width. Nothing lifts, glows or
+   casts a shadow on hover anywhere on the site.
+   --------------------------------------------------------------------------- */
+@layer components {
+  .btn {
+    transition-property: background-color, color, border-color;
+    transition-duration: 200ms;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* The whole hover. The arrow opens out of zero width; the button does not
+     lift, glow or cast anything. */
+  .btn-arrow {
+    display: inline-block;
+    width: 0;
+    margin-left: 0;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateX(-6px);
+    transition:
+      width 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      margin-left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 180ms linear,
+      transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .btn:hover .btn-arrow,
+  .btn:focus-visible .btn-arrow,
+  .btn:active .btn-arrow {
+    width: 1.1em;
+    margin-left: 0.6rem;
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  /* One clean pill silhouette: a flat field of the accent, and nothing else.
+     No inner highlight along the top curve: at this radius it read as a band
+     across the button rather than as an edge on it. Nothing sticks out past
+     the shape, and nothing moves on hover. */
+  .btn-primary {
+    color: var(--surface);
+    background-color: var(--cyan);
+  }
+
+  .btn-secondary {
+    color: var(--text);
+    background-color: var(--surface);
+    border: 1px solid var(--border-strong);
+  }
+
+  .btn-secondary:hover {
+    border-color: var(--cyan);
+    color: var(--cyan-dark);
+  }
+
+  .btn-ghost {
+    color: var(--text-dim);
+  }
+
+  .btn-ghost:hover {
+    color: var(--cyan-dark);
+  }
+}
+
+/* Infrastructure software. If the reader asked for stillness, give them
+   stillness, including the looping hero and diagram animations. */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   CONSOLE
+
+   Everything below is the operator surface, which the marketing site has no
+   use for: form controls, the graph canvas, and the panels that sit over it.
+   It is written in the same vocabulary as the block above: the same tokens,
+   the same 200ms colour transition, nothing that lifts or glows on hover.
+   --------------------------------------------------------------------------- */
+@layer components {
+  /* One input style for every text, number and password field in the console.
+     The cyan ring on focus is the same one :focus-visible draws elsewhere. */
+  .field {
+    width: 100%;
+    border-radius: 0.75rem;
+    border: 1px solid var(--border-strong);
+    background-color: var(--surface);
+    padding: 0.625rem 0.875rem;
+    font-size: var(--text-sm);
+    color: var(--text);
+    transition:
+      border-color 200ms cubic-bezier(0.22, 1, 0.36, 1),
+      background-color 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .field::placeholder {
+    color: var(--text-dim);
+  }
+
+  .field:hover:not(:disabled):not(:read-only) {
+    border-color: var(--cyan);
+  }
+
+  .field:focus {
+    outline: 2px solid var(--cyan);
+    outline-offset: 2px;
+    border-color: var(--cyan);
+  }
+
+  /* A disabled field is showing a value the operator does not own: a distance
+     resolved by a driver, an API key. It reads as a value, not as a control. */
+  .field:disabled,
+  .field:read-only {
+    background-color: var(--bg-subtle);
+    color: var(--text-dim);
+  }
+
+  /* Numbers, keys, plates and coordinates are always mono, never proportional. */
+  .field-mono {
+    font-family: var(--font-mono);
+    letter-spacing: -0.01em;
+  }
+}
+
+/* The graph canvas fills what is left under the header, and the page itself
+   never scrolls: panning is the scroll gesture there. */
+.console-shell {
+  height: calc(100dvh - 4rem);
+  overflow: hidden;
+}
+
+/* A row arriving in a live table announces itself once, in the status colour,
+   and then settles into the surface like every other row. */
+@keyframes row-arrive {
+  from {
+    background-color: color-mix(in oklab, var(--red) 16%, var(--surface));
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.row-arrive {
+  animation: row-arrive 1.4s cubic-bezier(0.22, 1, 0.36, 1);
+}

@@ -15,7 +15,7 @@ function createDatabase(path = "server/database.db") {
  * y = latitude, so the rename preserves meaning without swapping values.
  *
  * Idempotent: a database already carrying the new names is left alone. Unlike
- * the other migrations in this file it does NOT swallow errors — a
+ * the other migrations in this file it does NOT swallow errors: a
  * half-renamed nodes table means every coordinate read is silently wrong, so
  * it must stop startup rather than run on.
  */
@@ -40,7 +40,7 @@ function migrateNodeCoordinateColumns(db) {
             "nodes table is half-renamed: found columns " +
               `[${[...names].join(", ")}]. Expected either ` +
               "(x_coord, y_coord) or (longitude, latitude). Refusing to start " +
-              "— fix the schema by hand before serving coordinate data.",
+              "Fix the schema by hand before serving coordinate data.",
           ),
         );
       }
@@ -80,6 +80,26 @@ function initializeDatabase(db) {
       });
     });
   });
+}
+
+/**
+ * Every timestamp written to a TEXT column goes through here.
+ *
+ * One format across the whole system: ISO 8601 in UTC. It is what the REST API
+ * accepts on the way in, what the realtime events carry on the way out, and it
+ * sorts lexicographically, which is what lets the traversal window be a plain
+ * string comparison in SQL.
+ */
+function toIsoTimestamp(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "number") return new Date(value).toISOString();
+
+  // A string that is already a time is kept; anything unparseable is stamped
+  // now rather than written as a value nothing can read back.
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime())
+    ? new Date().toISOString()
+    : parsed.toISOString();
 }
 
 function createTables(db) {
@@ -337,14 +357,17 @@ const statements = {
   },
 
   createViolation: async (projectId, carPlate, carSpeed, timestamp, db) => {
-    console.log(projectId, carPlate, carSpeed, timestamp);
     return await addEntry(
       "violations",
       {
         project_id: projectId,
         car_plate: carPlate,
         car_speed: carSpeed,
-        timestamp: timestamp,
+        // ISO 8601 UTC, the same form `traversals.timestamp` uses and the same
+        // form the realtime `violation-added` event carries. Binding a Date
+        // straight into this TEXT column made SQLite write "1787905380236.0",
+        // which no client could parse back into a time.
+        timestamp: toIsoTimestamp(timestamp),
       },
       db,
     );
@@ -635,11 +658,7 @@ const statements = {
     return new Promise((resolve, reject) => {
       db.run(
         "INSERT INTO traversals (connection_id, delta_t, timestamp) VALUES (?, ?, ?)",
-        [
-          connectionId,
-          deltaT,
-          typeof timestamp === "object" ? timestamp.toISOString() : timestamp,
-        ],
+        [connectionId, deltaT, toIsoTimestamp(timestamp)],
         function (err) {
           if (err) reject(err);
           else resolve(this.lastID);

@@ -1,20 +1,33 @@
 {
   "name": "smart-checkpoints-server",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "build": "node scripts/build-console.js",
+    "start": "node server.js",
+    "dev": "node server.js",
+    "console:dev": "npm --prefix console run dev",
+    "console:lint": "npm --prefix console run lint"
   },
-  "keywords": [],
+  "keywords": [
+    "average speed enforcement",
+    "section control",
+    "traffic enforcement",
+    "checkpoint graph",
+    "smart checkpoints"
+  ],
   "author": "",
-  "license": "ISC",
-  "description": "",
+  "license": "MIT",
+  "description": "The Smart Checkpoints server: the checkpoint graph, the enforcement path, and the operator console that drives them.",
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "sqlite3": "^5.1.7",
     "ws": "^8.19.0"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
   }
 }

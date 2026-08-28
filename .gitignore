@@ -1,5 +1,15 @@
 node_modules
+
+# The SQLite database and its write-ahead log.
 database.db
 database.db-shm
 database.db-wal
+
 .env
+
+# The console's build output. `npm run build` regenerates both: public/ is the
+# static root Express serves, console/out is where Next.js writes the export.
+/public/
+/console/out/
+/console/.next/
+/console/next-env.d.ts

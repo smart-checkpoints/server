@@ -5,7 +5,7 @@
  *
  * All coordinates in Smart Checkpoints are WGS84 latitude/longitude, always.
  * Distances are always metres. This module is the only place the server does
- * arithmetic on coordinates — it never touches route geometry, which is a
+ * arithmetic on coordinates; it never touches route geometry, which is a
  * driver concern.
  *
  * `server/public/js/geo.js` is the browser copy of this file. It is fifteen

@@ -732,7 +732,7 @@ async function broadcastCongestion() {
 // --- Helpers ---
 function getWifiAddress() {
   const interfaces = os.networkInterfaces();
-  const adapterName = process.env.WIFI_ADAPTER_NAME;
+  const adapterName = process.env.WIFI_ADAPTER_NAME || "Wi-Fi";
 
   if (interfaces[adapterName]) {
     for (const info of interfaces[adapterName]) {

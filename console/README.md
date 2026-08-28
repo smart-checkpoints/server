@@ -14,8 +14,9 @@ Build it from the server directory:
 cd .. && npm run build
 ```
 
-That runs `next build` here and copies `out/` into `../public`. Building here
-directly with `npm run build` produces `out/` and leaves it there.
+That runs `next build` here. The output lands in `out/`, and the server's
+Express process serves that directory directly, so there is nothing to copy
+and nowhere for a second copy to go stale.
 
 `npm run dev` serves the pages with hot reload for UI work. Its API calls will
 not resolve, because the console talks to whatever origin serves it. For

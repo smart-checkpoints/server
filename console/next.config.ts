@@ -4,10 +4,10 @@ import type { NextConfig } from "next";
 /**
  * The console ships as a static site.
  *
- * `next build` writes plain HTML/CSS/JS into `out/`, which the server repo's
- * build step copies into `server/public` for Express to serve. Nothing here
- * runs on a Next.js server: every page talks to the Smart Checkpoints REST
- * API and Socket.IO channel from the browser, on the same origin.
+ * `next build` writes the site into `out/`, and the server's Express process
+ * serves that directory where it stands. Nothing here runs on a Next.js
+ * server: every page talks to the Smart Checkpoints REST API and Socket.IO
+ * channel from the browser, on the same origin.
  */
 const nextConfig: NextConfig = {
   output: "export",
@@ -19,10 +19,11 @@ const nextConfig: NextConfig = {
   // what `express.static` resolves without any rewrite rules.
   trailingSlash: true,
 
-  // Pin the workspace root here. Without it Turbopack walks up looking for a
-  // lockfile and can settle on the server repo's own package-lock.json.
+  // The console is an npm workspace of the server package, so its dependencies
+  // are hoisted into the server's node_modules. That directory is the workspace
+  // root, and Turbopack has to be told so or it will not resolve `next` at all.
   turbopack: {
-    root: path.join(__dirname),
+    root: path.join(__dirname, ".."),
   },
 };
 

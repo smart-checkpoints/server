@@ -18,11 +18,6 @@ const { Server } = require("socket.io");
 const WebSocket = require("ws");
 const crypto = require("crypto");
 const { parseCoordinate, isValidLatLng } = require("./geo.js");
-const {
-  publicDir,
-  detectConsoleBuild,
-  NOT_BUILT_MESSAGE,
-} = require("./console-build.js");
 
 // Every coordinate entering the system is WGS84 degrees. Rejecting here is the
 // only thing standing between a typo and enforcement built on a wrong position.
@@ -201,19 +196,31 @@ app.use(express.json());
 
 // --- The operator console ---
 //
-// `public/` is not written by hand. It is the static export of the Next.js
-// app in `console/`, installed there by `npm run build`. The console is the
-// same stack and the same design system as smartcheckpoints.xyz, and it talks
-// to this process over the REST API and the Socket.IO channel below; there is
-// no second server involved.
-const { built: consoleBuilt, missing: missingFromBuild } = detectConsoleBuild();
+// The console is the Next.js app in `console/`, built to static files. Express
+// serves that build where Next.js leaves it, so there is no copy step and no
+// second directory to keep in sync. It is the same stack and the same design
+// system as smartcheckpoints.xyz, and it talks to this process over the REST
+// API and the Socket.IO channel below; there is no second server involved.
+const consoleDir = path.join(__dirname, "console", "out");
+
+// `_next` holds every stylesheet and script. Without it the pages load bare,
+// which looks like a broken console rather than an unbuilt one.
+const consoleBuilt =
+  fs.existsSync(path.join(consoleDir, "index.html")) &&
+  fs.existsSync(path.join(consoleDir, "_next"));
+
+const NOT_BUILT_MESSAGE =
+  "The Smart Checkpoints console has not been built.\n\n" +
+  "Run this in the server directory, then reload:\n\n" +
+  "    npm run build\n\n" +
+  "The REST API and both realtime channels work without it; only these\n" +
+  "pages are missing.\n";
 
 if (!consoleBuilt) {
   console.warn(
     [
-      `⚠️  The console has not been built: public/ is missing ${missingFromBuild.join(", ")}.`,
-      "    The REST API and both realtime channels are running normally;",
-      "    only the browser pages are missing.",
+      "⚠️  The console has not been built, so its pages are unavailable.",
+      "    The REST API and both realtime channels are running normally.",
       "    Run `npm run build` in this directory to build them.",
     ].join("\n"),
   );
@@ -222,10 +229,10 @@ if (!consoleBuilt) {
 /**
  * Serves one exported console page.
  *
- * The export writes `<route>/index.html`. These routes are registered ahead of
- * `express.static` so `/admin` serves the page directly; left to itself, static
- * answers the slashless form with a 301 to `/admin/` and makes every page load
- * a round trip longer.
+ * Next.js writes `<route>/index.html`, and these routes are registered ahead
+ * of `express.static` so `/admin` serves the page directly; left to itself,
+ * static answers the slashless form with a 301 to `/admin/` and makes every
+ * page load a round trip longer.
  */
 function sendConsolePage(route) {
   return (req, res) => {
@@ -233,10 +240,9 @@ function sendConsolePage(route) {
       return res.status(503).type("text/plain").send(NOT_BUILT_MESSAGE);
     }
 
-    // A file that vanished after startup, or a directory that was only ever
-    // half copied, must not reach the browser as an ENOENT stack trace with an
-    // absolute path in it. Say the same thing the startup warning says.
-    res.sendFile(path.join(publicDir, route, "index.html"), (err) => {
+    // A missing file must not reach the browser as an ENOENT stack trace with
+    // an absolute path in it. Say what the startup warning says.
+    res.sendFile(path.join(consoleDir, route, "index.html"), (err) => {
       if (!err || res.headersSent) return;
       console.warn(`⚠️  Could not serve /${route}: ${err.message}`);
       res.status(503).type("text/plain").send(NOT_BUILT_MESSAGE);
@@ -244,15 +250,14 @@ function sendConsolePage(route) {
   };
 }
 
-// The root is served explicitly too. Left to `express.static` alone, an
-// unbuilt or half-built public/ answers it with Express's own 404 rather than
-// with the one message that tells the reader what to do about it.
+// The root is served explicitly too, so an unbuilt console answers it with the
+// message above rather than with Express's own 404.
 app.get("/", sendConsolePage(""));
 app.get("/project", sendConsolePage("project"));
 app.get("/admin", sendConsolePage("admin"));
 
 if (consoleBuilt) {
-  app.use(express.static(publicDir));
+  app.use(express.static(consoleDir));
 }
 
 // The documentation lives in one place for the whole ecosystem, and this is

@@ -7,9 +7,8 @@ database.db-wal
 
 .env
 
-# The console's build output. `npm run build` regenerates both: public/ is the
-# static root Express serves, console/out is where Next.js writes the export.
-/public/
+# The console's build output. `npm run build` regenerates it; the server serves
+# it from where Next.js writes it.
 /console/out/
 /console/.next/
 /console/next-env.d.ts

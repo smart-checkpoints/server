@@ -8,7 +8,7 @@
  * arithmetic on coordinates; it never touches route geometry, which is a
  * driver concern.
  *
- * `server/public/js/geo.js` is the browser copy of this file. It is fifteen
+ * `console/src/lib/geo.ts` is the browser copy of this file. It is fifteen
  * lines of maths and duplicating it is cheaper than a build step; keep the two
  * in sync by hand.
  */

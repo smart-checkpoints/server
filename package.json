@@ -1,13 +1,19 @@
 {
   "name": "smart-checkpoints-server",
   "version": "1.0.0",
+  "private": true,
+  "description": "The Smart Checkpoints server: the checkpoint graph, the enforcement path, and the operator console that drives them.",
+  "license": "MIT",
   "main": "server.js",
+  "workspaces": [
+    "console"
+  ],
   "scripts": {
-    "build": "node scripts/build-console.js",
+    "build": "npm run build --workspace console",
     "start": "node server.js",
     "dev": "node server.js",
-    "console:dev": "npm --prefix console run dev",
-    "console:lint": "npm --prefix console run lint"
+    "console:dev": "npm run dev --workspace console",
+    "console:lint": "npm run lint --workspace console"
   },
   "keywords": [
     "average speed enforcement",
@@ -17,17 +23,14 @@
     "smart checkpoints"
   ],
   "author": "",
-  "license": "MIT",
-  "description": "The Smart Checkpoints server: the checkpoint graph, the enforcement path, and the operator console that drives them.",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",
     "sqlite3": "^5.1.7",
     "ws": "^8.19.0"
-  },
-  "private": true,
-  "engines": {
-    "node": ">=20"
   }
 }

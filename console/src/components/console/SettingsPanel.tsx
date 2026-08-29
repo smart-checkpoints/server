@@ -2,9 +2,12 @@
 
 import { useState } from "react";
 import DriverStatus from "@/components/console/DriverStatus";
+import MapDriverSettings from "@/components/console/MapDriverSettings";
+import ReporterKeys from "@/components/console/ReporterKeys";
 import Button from "@/components/ui/Button";
 import CopyButton from "@/components/ui/CopyButton";
 import Panel from "@/components/ui/Panel";
+import type { MapDriverState } from "@/lib/api";
 import { maskKey, pluralise } from "@/lib/format";
 import type { ConsoleSession } from "@/lib/session";
 import { docsLinks } from "@/lib/site";
@@ -17,6 +20,8 @@ type SettingsPanelProps = {
   connectionCount: number;
   driverConnected: boolean;
   realtimeConnected: boolean;
+  mapDriver: MapDriverState;
+  onMapDriverChange: (state: MapDriverState) => void;
   onSignOut: () => void;
 };
 
@@ -46,6 +51,8 @@ export default function SettingsPanel({
   connectionCount,
   driverConnected,
   realtimeConnected,
+  mapDriver,
+  onMapDriverChange,
   onSignOut,
 }: SettingsPanelProps) {
   const [revealed, setRevealed] = useState(false);
@@ -116,11 +123,25 @@ export default function SettingsPanel({
             <CopyButton value={session.apiKey} label="Copy key" />
           </div>
           <p className="mt-3 text-xs text-text-dim">
-            The same key authenticates this console, every camera reporting
-            sightings, and the project&apos;s distance driver. It is held for
-            this tab only and is never put in a link.
+            The project&apos;s operator key: this console, the distance driver,
+            and anything that edits the graph. It is held for this tab only and
+            is never put in a link. Cameras should not hold it - issue each one
+            a key of its own below.
           </p>
         </div>
+
+        <MapDriverSettings
+          projectId={session.project_id}
+          apiKey={session.apiKey}
+          state={mapDriver}
+          onChange={onMapDriverChange}
+        />
+
+        <ReporterKeys
+          projectId={session.project_id}
+          apiKey={session.apiKey}
+          active={open}
+        />
       </div>
     </Panel>
   );

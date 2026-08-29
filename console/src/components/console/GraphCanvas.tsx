@@ -10,8 +10,20 @@ import {
 } from "react";
 import type { CheckpointNode, Connection } from "@/lib/api";
 import { formatDistance, formatSpeed } from "@/lib/format";
-import { makeProjection, type Point, type Projection } from "@/lib/geo";
-import { congestionColor, readTokens, withAlpha, type Tokens } from "@/lib/tokens";
+import {
+  haversineMeters,
+  makeProjection,
+  type LatLng,
+  type Point,
+  type Projection,
+} from "@/lib/geo";
+import {
+  congestionColor,
+  monoFamily,
+  readTokens,
+  withAlpha,
+  type Tokens,
+} from "@/lib/tokens";
 
 /* ---------------------------------------------------------------------------
    Screen constants.
@@ -38,10 +50,32 @@ export type EdgeDraft = {
   to: CheckpointNode;
 };
 
+/**
+ * A checkpoint dropped somewhere new, waiting to be confirmed.
+ *
+ * The graph is geometrically faithful, so a drop point is a real WGS84
+ * position and `metres` is how far the camera would actually move. Nothing is
+ * written until an operator has seen that number and agreed to it.
+ */
+export type MoveDraft = {
+  node: CheckpointNode;
+  to: LatLng;
+  metres: number;
+};
+
 export type GraphCanvasHandle = {
   /** Frames every checkpoint in the view. */
   fit: () => void;
   zoomBy: (factor: number) => void;
+  /**
+   * Drops the preview of a checkpoint that was dragged but not committed.
+   *
+   * The canvas holds a dropped checkpoint where it was dropped while the
+   * confirmation is on screen, so the operator can read the dialog and look at
+   * where the thing would land at the same time. Whoever owns that dialog owns
+   * putting the preview away.
+   */
+  clearMove: () => void;
 };
 
 type HoverInfo = {
@@ -66,9 +100,19 @@ type GraphCanvasProps = {
   congestionTargets: Record<number, number>;
   /** The most recent checkpoint sighting, or null before the first one. */
   flash: FlashSignal | null;
+  /**
+   * node_id -> one line saying what is wrong with that checkpoint's position.
+   *
+   * The canvas marks the checkpoints in here and repeats the line on hover,
+   * and knows nothing else about diagnostics: what counts as wrong, and how to
+   * say it, belongs with the panel that explains it at length.
+   */
+  nodeWarnings: Record<number, string>;
   selectedConnectionId: number | null;
   onSelectConnection: (connection: Connection | null) => void;
   onDraftEdge: (draft: EdgeDraft) => void;
+  /** A checkpoint was dragged to a new position and wants confirming. */
+  onDraftMove: (draft: MoveDraft) => void;
 };
 
 /** How fast a congestion colour moves toward its new value, per frame. */
@@ -96,9 +140,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       connections,
       congestionTargets,
       flash,
+      nodeWarnings,
       selectedConnectionId,
       onSelectConnection,
       onDraftEdge,
+      onDraftMove,
     },
     ref,
   ) {
@@ -114,8 +160,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const framed = useRef(false);
 
     /* Live props for the draw loop, which is not re-created per render. */
-    const data = useRef({ nodes, connections, congestionTargets, selectedConnectionId });
-    data.current = { nodes, connections, congestionTargets, selectedConnectionId };
+    const data = useRef({
+      nodes,
+      connections,
+      congestionTargets,
+      nodeWarnings,
+      selectedConnectionId,
+    });
+    data.current = {
+      nodes,
+      connections,
+      congestionTargets,
+      nodeWarnings,
+      selectedConnectionId,
+    };
 
     /* Animated values. These move every frame, so they never touch React
        state: a congestion ramp or a flash decaying at 60fps would otherwise
@@ -125,13 +183,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const lastFlashSeq = useRef<number | null>(null);
 
     const interaction = useRef<{
-      mode: "idle" | "panning" | "linking";
+      mode: "idle" | "panning" | "linking" | "moving";
       pointerId: number | null;
       originX: number;
       originY: number;
       panX: number;
       panY: number;
       linkFrom: CheckpointNode | null;
+      moveNode: CheckpointNode | null;
       pointerX: number;
       pointerY: number;
       moved: boolean;
@@ -145,12 +204,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       panX: 0,
       panY: 0,
       linkFrom: null,
+      moveNode: null,
       pointerX: 0,
       pointerY: 0,
       moved: false,
       hoveredNodeId: null,
       hoveredConnectionId: null,
     });
+
+    /* Where a dragged checkpoint currently sits, in world metres. Set while
+       the drag is happening and kept afterwards, until the confirmation it
+       raised is answered one way or the other. */
+    const movePreview = useRef<{ nodeId: number; x: number; y: number } | null>(
+      null,
+    );
 
     /* The painter, published by the setup effect once it has a context.
        Everything that changes what is on screen calls it directly: a canvas
@@ -244,14 +311,21 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       [paintNow],
     );
 
+    const clearMove = useCallback(() => {
+      if (!movePreview.current) return;
+      movePreview.current = null;
+      paintNow();
+    }, [paintNow]);
+
     useImperativeHandle(
       ref,
       () => ({
         fit,
         zoomBy: (factor: number) =>
           zoomAt(factor, size.current.width / 2, size.current.height / 2),
+        clearMove,
       }),
-      [fit, zoomAt],
+      [fit, zoomAt, clearMove],
     );
 
     /* ---------------------------------------------------------------------
@@ -432,7 +506,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       (ctx: CanvasRenderingContext2D, tokens: Tokens) => {
         const { width, height } = size.current;
         const { panX, panY, zoom } = view.current;
-        const { nodes: list, connections: edges } = data.current;
+        const { nodes: list, connections: edges, nodeWarnings: warnings } = data.current;
         const ratios = congestionDisplay.current;
         const pulses = flashValues.current;
         const state = interaction.current;
@@ -449,6 +523,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         const positions = new Map<number, Point>();
         for (const node of list) positions.set(node.node_id, nodeXY(node));
+
+        // A checkpoint being dragged sits where the pointer left it, and every
+        // edge touching it follows, so the operator can see what the new
+        // geometry would look like before agreeing to it.
+        const preview = movePreview.current;
+        if (preview && positions.has(preview.nodeId)) {
+          positions.set(preview.nodeId, { x: preview.x, y: preview.y });
+        }
 
         /* Edges under nodes, so a checkpoint is never covered by its own road. */
         const nodeRadius = NODE_RADIUS / zoom;
@@ -483,12 +565,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
           const selected = data.current.selectedConnectionId === edge.connection_id;
           const hovered = state.hoveredConnectionId === edge.connection_id;
-          const unresolved = !edge.distance || edge.distance <= 0;
+          const enforced = edge.distance_status === "ok";
+          const noRoute = edge.distance_status === "no-route";
           const ratio = ratios[edge.connection_id];
 
           let color: string;
-          if (ratio !== undefined) color = congestionColor(ratio, tokens);
-          else if (unresolved) color = tokens.yellow;
+          // Status wins over congestion. An edge that cannot enforce must not
+          // be painted as a working road by a ratio left over from before it
+          // was downgraded.
+          if (!enforced) color = noRoute ? tokens.red : tokens.yellow;
+          else if (ratio !== undefined) color = congestionColor(ratio, tokens);
           else color = withAlpha(tokens.cyanDark, selected || hovered ? 1 : 0.55);
 
           ctx.save();
@@ -498,9 +584,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           ctx.lineCap = "round";
 
           // An edge with no resolved distance cannot enforce anything, so it
-          // is drawn as an unfinished thing rather than a working one.
-          if (unresolved && ratio === undefined) {
-            ctx.setLineDash([10 / zoom, 8 / zoom]);
+          // is drawn as an unfinished thing rather than a working one. The two
+          // ways of being unresolved get two different strokes, because they
+          // need two different fixes: dashes for "nobody has answered yet",
+          // dots for "a driver answered, and there is no road there".
+          if (!enforced) {
+            ctx.setLineDash(
+              noRoute ? [2 / zoom, 7 / zoom] : [10 / zoom, 8 / zoom],
+            );
           }
 
           ctx.beginPath();
@@ -520,6 +611,27 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           ctx.closePath();
           ctx.fill();
           ctx.restore();
+        }
+
+        /* Where a dragged checkpoint came from, so the move is legible as a
+           move rather than as a checkpoint that has always been there. */
+        if (preview) {
+          const origin = list.find((node) => node.node_id === preview.nodeId);
+          if (origin) {
+            const from = nodeXY(origin);
+            ctx.save();
+            ctx.setLineDash([6 / zoom, 6 / zoom]);
+            ctx.strokeStyle = withAlpha(tokens.textDim, 0.55);
+            ctx.lineWidth = 1.5 / zoom;
+            ctx.beginPath();
+            ctx.arc(from.x, from.y, nodeRadius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y);
+            ctx.lineTo(preview.x, preview.y);
+            ctx.stroke();
+            ctx.restore();
+          }
         }
 
         /* The edge being drawn out of a checkpoint. */
@@ -575,8 +687,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           ctx.stroke();
 
           ctx.fillStyle = pulse > 0 ? tokens.red : tokens.cyanDark;
-          ctx.font = `600 ${(NODE_RADIUS * 0.72) / zoom}px var(--font-jetbrains-mono), monospace`;
+          ctx.font = `600 ${(NODE_RADIUS * 0.72) / zoom}px ${monoFamily()}`;
           ctx.fillText(String(node.id_in_project), point.x, point.y + 0.5 / zoom);
+
+          // A checkpoint whose position the data says is wrong. Marked rather
+          // than recoloured: the node's own colour already means something
+          // (it is a checkpoint, and it has just been triggered), and a bad
+          // fix is a separate fact about the same thing.
+          if (warnings[node.node_id]) {
+            drawWarningBadge(ctx, tokens, point, nodeRadius, zoom);
+          }
         }
 
         ctx.restore();
@@ -589,7 +709,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     /* Redraw whenever the data behind the frame changes. */
     useEffect(() => {
       paintNow();
-    }, [nodes, connections, selectedConnectionId, paintNow]);
+    }, [nodes, connections, nodeWarnings, selectedConnectionId, paintNow]);
 
     /* New congestion figures do not snap: the colour walks to them. */
     useEffect(() => {
@@ -634,8 +754,21 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       // Middle button always pans, whatever is under it.
       const node = event.button === 1 ? null : nodeAt(world.x, world.y);
       if (node) {
-        state.mode = "linking";
-        state.linkFrom = node;
+        // Shift picks the checkpoint up; a plain drag draws an edge out of it.
+        // Drawing the graph is the frequent action and keeps the unmodified
+        // gesture; moving a camera changes what counts as speeding, so it is
+        // the deliberate one - and it still has to be confirmed after that.
+        if (event.shiftKey) {
+          state.mode = "moving";
+          state.moveNode = node;
+          movePreview.current = {
+            nodeId: node.node_id,
+            ...nodeXY(node),
+          };
+        } else {
+          state.mode = "linking";
+          state.linkFrom = node;
+        }
         paintNow();
         return;
       }
@@ -667,6 +800,18 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         return;
       }
 
+      if (state.mode === "moving" && state.moveNode) {
+        state.moved = true;
+        const world = toWorld(x, y);
+        movePreview.current = {
+          nodeId: state.moveNode.node_id,
+          x: world.x,
+          y: world.y,
+        };
+        paintNow();
+        return;
+      }
+
       const world = toWorld(x, y);
       const node = nodeAt(world.x, world.y);
       const edge = node ? null : connectionAt(world.x, world.y);
@@ -680,13 +825,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       if (changed) {
         if (node) {
+          const warning = nodeWarnings[node.node_id];
           setHover({
             x,
             y,
             lines: [
               `Checkpoint ${node.id_in_project}`,
               `${node.latitude.toFixed(5)}, ${node.longitude.toFixed(5)}`,
+              ...(warning ? [warning] : []),
               "Drag to another checkpoint to link",
+              "Shift-drag to correct its position",
             ],
           });
         } else if (edge) {
@@ -697,11 +845,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
             y,
             lines: [
               `Checkpoint ${from?.id_in_project ?? "?"} to ${to?.id_in_project ?? "?"}`,
-              `${
-                edge.distance > 0
-                  ? formatDistance(edge.distance)
-                  : "no distance resolved"
-              } · ${formatSpeed(edge.speed_limit)}`,
+              `${describeDistance(edge)} · ${formatSpeed(edge.speed_limit)}`,
             ],
           });
         } else {
@@ -727,6 +871,34 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         state.pointerId = null;
       }
 
+      if (state.mode === "moving" && state.moveNode) {
+        const node = state.moveNode;
+        const proj = projection.current;
+        state.moveNode = null;
+        state.mode = "idle";
+
+        // A shift-click that never moved is not a move. The preview goes with
+        // it, so nothing is left sitting under a dialog that never opened.
+        if (!state.moved || !proj) {
+          movePreview.current = null;
+          paintNow();
+          return;
+        }
+
+        const to = proj.unproject(world.x, world.y);
+        movePreview.current = { nodeId: node.node_id, x: world.x, y: world.y };
+        paintNow();
+        onDraftMove({
+          node,
+          to,
+          metres: haversineMeters(
+            { lat: node.latitude, lng: node.longitude },
+            to,
+          ),
+        });
+        return;
+      }
+
       if (state.mode === "linking" && state.linkFrom) {
         const target = nodeAt(world.x, world.y);
         if (target && target.node_id !== state.linkFrom.node_id) {
@@ -749,8 +921,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     const onPointerLeave = () => {
       const state = interaction.current;
+      // A drag that leaves the canvas is abandoned, and an abandoned move
+      // leaves the checkpoint where it was.
+      if (state.mode === "moving") movePreview.current = null;
       state.mode = "idle";
       state.linkFrom = null;
+      state.moveNode = null;
       state.hoveredNodeId = null;
       state.hoveredConnectionId = null;
       setHover(null);
@@ -781,11 +957,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const cursor =
       state.mode === "panning"
         ? "grabbing"
-        : state.mode === "linking"
-          ? "crosshair"
-          : state.hoveredNodeId !== null || state.hoveredConnectionId !== null
-            ? "pointer"
-            : "grab";
+        : state.mode === "moving"
+          ? "grabbing"
+          : state.mode === "linking"
+            ? "crosshair"
+            : state.hoveredNodeId !== null || state.hoveredConnectionId !== null
+              ? "pointer"
+              : "grab";
 
     return (
       <div ref={wrapRef} className="relative h-full w-full overflow-hidden">
@@ -829,6 +1007,57 @@ export default GraphCanvas;
 /* ---------------------------------------------------------------------------
    Canvas helpers
    --------------------------------------------------------------------------- */
+
+/**
+ * The distance line in an edge's tooltip.
+ *
+ * An unresolved edge says which kind of unresolved it is, because that is the
+ * whole difference between waiting and fixing something.
+ */
+function describeDistance(edge: Connection): string {
+  if (edge.distance_status === "ok") return formatDistance(edge.distance);
+  if (edge.distance_status === "no-route") return "no road found";
+  return "no distance resolved";
+}
+
+/**
+ * The mark on a checkpoint whose position looks wrong.
+ *
+ * Sized in screen pixels rather than metres, like the checkpoints themselves:
+ * it is a piece of interface attached to a position, not a thing on the
+ * ground, and it has to stay legible at every zoom. Drawn on the upper right,
+ * where an edge is least likely to be underneath it.
+ */
+function drawWarningBadge(
+  ctx: CanvasRenderingContext2D,
+  tokens: Tokens,
+  point: Point,
+  nodeRadius: number,
+  zoom: number,
+) {
+  const diagonal = 0.7071;
+  const cx = point.x + nodeRadius * diagonal;
+  const cy = point.y - nodeRadius * diagonal;
+  const radius = 8 / zoom;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = tokens.yellow;
+  ctx.fill();
+  // A ring in the page colour, so the badge reads as a badge rather than as
+  // part of whatever it happens to overlap.
+  ctx.lineWidth = 2 / zoom;
+  ctx.strokeStyle = tokens.bg;
+  ctx.stroke();
+
+  ctx.fillStyle = tokens.text;
+  ctx.font = `700 ${11 / zoom}px ${monoFamily()}`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("!", cx, cy + 0.5 / zoom);
+  ctx.restore();
+}
 
 function distanceToSegment(
   px: number,
@@ -932,7 +1161,7 @@ function drawScaleBar(
   ctx.lineTo(x + pixels, y - 5);
   ctx.stroke();
 
-  ctx.font = "500 11px var(--font-jetbrains-mono), monospace";
+  ctx.font = `500 11px ${monoFamily()}`;
   ctx.textAlign = "left";
   ctx.textBaseline = "bottom";
   ctx.fillText(formatDistance(step), x, y - 8);

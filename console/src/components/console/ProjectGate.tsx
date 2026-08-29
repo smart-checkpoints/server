@@ -34,10 +34,15 @@ export default function ProjectGate() {
       // so there is nothing to hand back to the caller.
       writeSession({ ...project, apiKey: key });
     } catch (err) {
+      // 403 is a real key that is not an operator key - a camera's, most
+      // likely - and the server says which. That is worth passing through
+      // rather than flattening into "no such key".
       setError(
-        err instanceof ApiError && err.status === 401
-          ? "That key does not open any project on this server."
-          : "The server could not be reached. Try again.",
+        err instanceof ApiError && err.status === 403
+          ? err.message
+          : err instanceof ApiError && err.status === 401
+            ? "That key does not open any project on this server."
+            : "The server could not be reached. Try again.",
       );
       setBusy(false);
     }

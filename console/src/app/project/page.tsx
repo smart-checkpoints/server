@@ -1,20 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AddCheckpointDialog from "@/components/console/AddCheckpointDialog";
 import CanvasControls from "@/components/console/CanvasControls";
 import ConnectionEditor from "@/components/console/ConnectionEditor";
+import DiagnosticsPanel, {
+  summariseNode,
+} from "@/components/console/DiagnosticsPanel";
 import DriverStatus from "@/components/console/DriverStatus";
 import GraphCanvas, {
   type EdgeDraft,
   type FlashSignal,
   type GraphCanvasHandle,
+  type MoveDraft,
 } from "@/components/console/GraphCanvas";
 import GraphLegend from "@/components/console/GraphLegend";
+import MapView from "@/components/console/MapView";
+import MoveCheckpointDialog from "@/components/console/MoveCheckpointDialog";
 import NewConnectionDialog from "@/components/console/NewConnectionDialog";
 import ProjectGate from "@/components/console/ProjectGate";
 import SettingsPanel from "@/components/console/SettingsPanel";
+import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
@@ -22,14 +29,23 @@ import Nav from "@/components/ui/Nav";
 import {
   createNode,
   getConnections,
+  getDiagnostics,
   getDistanceDriverStatus,
+  getGeometry,
+  getMapDriverState,
   getNodes,
   getViolations,
+  moveNode,
   type CheckpointNode,
   type Connection,
+  type Diagnostics,
+  type MapDriverState,
+  type PathGeometry,
   type Violation,
 } from "@/lib/api";
 import { pluralise } from "@/lib/format";
+import { haversineMeters } from "@/lib/geo";
+import type { BridgeSelection } from "@/lib/mapbridge";
 import type { ConsoleSocket } from "@/lib/realtime";
 import { connectProject } from "@/lib/realtime";
 import { clearSession, useConsoleSession } from "@/lib/session";
@@ -48,13 +64,41 @@ export default function ProjectConsolePage() {
   const [congestion, setCongestion] = useState<Record<number, number>>({});
   const [flash, setFlash] = useState<FlashSignal | null>(null);
 
+  /* Data quality is derived, never stored, and goes stale the moment a node
+     moves - so it is held here for exactly as long as it is being looked at,
+     and recomputed rather than updated. */
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [checkedAt, setCheckedAt] = useState<number | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
+
   const [driverConnected, setDriverConnected] = useState(false);
   const [realtimeConnected, setRealtimeConnected] = useState(false);
+
+  /* The map view is a separate process rendering the same geometry in an
+     iframe. It only exists when a map driver has announced an address and an
+     operator has approved it; the graph view needs none of that and is the
+     fallback whenever any part of it is missing. */
+  const [mapDriver, setMapDriver] = useState<MapDriverState>({
+    connected: false,
+    status: "none",
+    url: null,
+    origin: null,
+    pending_url: null,
+  });
+  const [view, setView] = useState<ConsoleView>("graph");
+  const [mapEverOpened, setMapEverOpened] = useState(false);
+  const [geometry, setGeometry] = useState<Record<number, PathGeometry>>({});
+  /* Bumped whenever an edge changes, to re-read the road shapes once the
+     changes stop arriving rather than once per edge. */
+  const [geometryVersion, setGeometryVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
   const [selected, setSelected] = useState<Connection | null>(null);
   const [draft, setDraft] = useState<EdgeDraft | null>(null);
+  const [moveDraft, setMoveDraft] = useState<MoveDraft | null>(null);
   const [showViolations, setShowViolations] = useState(false);
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addingCheckpoint, setAddingCheckpoint] = useState(false);
 
@@ -74,20 +118,28 @@ export default function ProjectConsolePage() {
     const { project_id: projectId, apiKey } = session;
 
     void (async () => {
-      const [nodeRows, edgeRows, violationRows, driver] = await Promise.all([
-        getNodes(projectId, apiKey, controller.signal).catch(() => []),
-        getConnections(projectId, apiKey, controller.signal).catch(() => []),
-        getViolations(projectId, apiKey, controller.signal).catch(() => []),
-        getDistanceDriverStatus(projectId, apiKey, controller.signal).catch(() => ({
-          connected: false,
-        })),
-      ]);
+      const [nodeRows, edgeRows, violationRows, driver, quality, map] =
+        await Promise.all([
+          getNodes(projectId, apiKey, controller.signal).catch(() => []),
+          getConnections(projectId, apiKey, controller.signal).catch(() => []),
+          getViolations(projectId, apiKey, controller.signal).catch(() => []),
+          getDistanceDriverStatus(projectId, apiKey, controller.signal).catch(() => ({
+            connected: false,
+          })),
+          getDiagnostics(projectId, apiKey, controller.signal).catch(() => null),
+          getMapDriverState(projectId, apiKey, controller.signal).catch(() => null),
+        ]);
 
       if (controller.signal.aborted) return;
       setNodes(nodeRows);
       setConnections(edgeRows);
       setViolations(violationRows);
       setDriverConnected(driver.connected);
+      if (map) setMapDriver(map);
+      if (quality) {
+        setDiagnostics(quality);
+        setCheckedAt(Date.now());
+      }
       setLoaded(true);
     })();
 
@@ -119,6 +171,16 @@ export default function ProjectConsolePage() {
       );
     });
 
+    channel.on("node-moved", (data) => {
+      setNodes((current) =>
+        current.map((node) =>
+          node.node_id === data.node_id
+            ? { ...node, latitude: data.latitude, longitude: data.longitude }
+            : node,
+        ),
+      );
+    });
+
     channel.on("connection-added", (data) => {
       setConnections((current) =>
         current.some((edge) => edge.connection_id === data.connection_id)
@@ -131,16 +193,25 @@ export default function ProjectConsolePage() {
                 to_node_id: data.to_node_id,
                 distance: data.distance,
                 speed_limit: data.speed_limit,
+                distance_status: data.distance_status,
               },
             ],
       );
     });
 
     channel.on("connection-updated", (data) => {
+      // The geometry lives behind its own endpoint, so an edge changing is
+      // notice that the road shape may have changed with it.
+      setGeometryVersion((version) => version + 1);
       setConnections((current) =>
         current.map((edge) =>
           edge.connection_id === data.connection_id
-            ? { ...edge, distance: data.distance, speed_limit: data.speed_limit }
+            ? {
+                ...edge,
+                distance: data.distance,
+                speed_limit: data.speed_limit,
+                distance_status: data.distance_status,
+              }
             : edge,
         ),
       );
@@ -168,12 +239,115 @@ export default function ProjectConsolePage() {
       setDriverConnected(data.connected);
     });
 
+    channel.on("map-driver-status", (data) => {
+      setMapDriver(data);
+    });
+
     return () => {
       channel.removeAllListeners();
       channel.disconnect();
       socket.current = null;
     };
   }, [session]);
+
+  /* ---------------------------------------------------------------------
+     The map view
+     --------------------------------------------------------------------- */
+
+  /** An approved address with nothing serving it is not a view. */
+  const mapAvailable = mapDriver.status === "approved" && mapDriver.connected;
+
+  /* A view the operator chose, honoured whenever it is actually there. A map
+     driver that drops falls back to the graph without anything to dismiss, and
+     one that comes back picks up where it was, because falling back was never
+     a decision the operator made. */
+  const activeView: ConsoleView = view === "map" && mapAvailable ? "map" : "graph";
+  const mapMounted = mapAvailable && mapEverOpened;
+
+  /**
+   * Road shapes, read only once something is drawing them.
+   *
+   * Geometry is up to a quarter of a megabyte an edge, the graph view draws
+   * none of it, and most sessions never open a map - so it is not part of the
+   * project load. Edge changes arrive in bursts (every driver connection
+   * recalculates), and the timer coalesces a burst into one read.
+   */
+  useEffect(() => {
+    if (!session || !mapMounted) return;
+
+    const controller = new AbortController();
+    const timer = setTimeout(
+      () => {
+        void (async () => {
+          try {
+            const rows = await getGeometry(
+              session.project_id,
+              session.apiKey,
+              controller.signal,
+            );
+            if (controller.signal.aborted) return;
+            const next: Record<number, PathGeometry> = {};
+            for (const row of rows) next[row.connection_id] = row.path;
+            setGeometry(next);
+          } catch {
+            // The map draws what it has. A failed read is not worth a dialog
+            // over a layer that is decoration on top of the same graph.
+          }
+        })();
+      },
+      geometryVersion === 0 ? 0 : 500,
+    );
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [session, mapMounted, geometryVersion]);
+
+  const openView = useCallback((next: ConsoleView) => {
+    setView(next);
+    // The frame is mounted on first use and never unmounted again: hiding it
+    // costs nothing, and re-creating it re-downloads every tile.
+    if (next === "map") setMapEverOpened(true);
+  }, []);
+
+  /** An edge chosen on the map opens the same editor a click on the graph does. */
+  const selectFromMap = useCallback(
+    (selection: BridgeSelection) => {
+      if (selection.kind === "edge") {
+        setSelected(
+          connections.find((edge) => edge.connection_id === selection.id) ?? null,
+        );
+        return;
+      }
+      if (selection.kind === null) setSelected(null);
+    },
+    [connections],
+  );
+
+  /**
+   * A checkpoint dragged on the basemap.
+   *
+   * It goes through the same confirmation and the same endpoint as a drag on
+   * the graph: the map is where a bad GPS fix becomes obvious, but it is still
+   * a camera's real position and every distance measured to it still stops
+   * being true. The map driver proposes; nothing here writes on its say-so.
+   */
+  const moveFromMap = useCallback(
+    (nodeId: number, to: { lat: number; lng: number }) => {
+      const node = nodes.find((candidate) => candidate.node_id === nodeId);
+      if (!node) return;
+      setMoveDraft({
+        node,
+        to,
+        metres: haversineMeters(
+          { lat: node.latitude, lng: node.longitude },
+          to,
+        ),
+      });
+    },
+    [nodes],
+  );
 
   /* ---------------------------------------------------------------------
      Writes
@@ -196,11 +370,15 @@ export default function ProjectConsolePage() {
   );
 
   const saveEdge = useCallback(
-    (edge: { distanceMeters: number; speedLimitKmh: number }) => {
+    (edge: { distanceMeters?: number; speedLimitKmh: number }) => {
       if (!selected) return;
+      // An omitted distance means "leave it and its status alone" - the case
+      // where a driver owns the number, or where nobody has resolved it yet.
       socket.current?.emit("update-connection", {
         connection_id: selected.connection_id,
-        distance: edge.distanceMeters,
+        ...(edge.distanceMeters === undefined
+          ? {}
+          : { distance: edge.distanceMeters }),
         speed_limit: edge.speedLimitKmh,
       });
 
@@ -212,8 +390,13 @@ export default function ProjectConsolePage() {
           row.connection_id === selected.connection_id
             ? {
                 ...row,
-                distance: edge.distanceMeters,
                 speed_limit: edge.speedLimitKmh,
+                ...(edge.distanceMeters === undefined
+                  ? {}
+                  : {
+                      distance: edge.distanceMeters,
+                      distance_status: "ok" as const,
+                    }),
               }
             : row,
         ),
@@ -222,6 +405,62 @@ export default function ProjectConsolePage() {
     },
     [selected],
   );
+
+  /* ---------------------------------------------------------------------
+     Data quality
+     --------------------------------------------------------------------- */
+
+  const recheck = useCallback(async () => {
+    if (!session) return;
+    setChecking(true);
+    try {
+      const result = await getDiagnostics(session.project_id, session.apiKey);
+      setDiagnostics(result);
+      setCheckedAt(Date.now());
+      setCheckError(null);
+    } catch (err) {
+      setCheckError(
+        err instanceof Error ? err.message : "The check could not be run",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }, [session]);
+
+  /** node_id -> the one-line reason, for the mark on the canvas. */
+  const nodeWarnings = useMemo(() => {
+    const warnings: Record<number, string> = {};
+    for (const node of diagnostics?.nodes ?? []) {
+      if (node.flags.length > 0) warnings[node.node_id] = summariseNode(node);
+    }
+    return warnings;
+  }, [diagnostics]);
+
+  const flaggedCount = Object.keys(nodeWarnings).length;
+
+  /**
+   * Commits a dragged checkpoint.
+   *
+   * The new position, and every edge that just stopped enforcing because of
+   * it, arrive back over the realtime channel; there is nothing to apply
+   * optimistically here, and pretending otherwise would show distances that
+   * are about to be thrown away. The preview on the canvas is dropped either
+   * way, because from here on the canvas is drawing what the server says.
+   */
+  const commitMove = useCallback(
+    async (move: MoveDraft) => {
+      if (!session) return;
+      await moveNode(session.apiKey, move.node.node_id, move.to);
+      canvas.current?.clearMove();
+      setMoveDraft(null);
+    },
+    [session],
+  );
+
+  const cancelMove = useCallback(() => {
+    canvas.current?.clearMove();
+    setMoveDraft(null);
+  }, []);
 
   const addCheckpoint = useCallback(
     async (position: { lat: number; lng: number }) => {
@@ -248,7 +487,9 @@ export default function ProjectConsolePage() {
 
       if (event.key === "Escape") {
         setSelected(null);
+        cancelMove();
         setShowViolations(false);
+        setShowDiagnostics(false);
         setShowSettings(false);
         return;
       }
@@ -259,7 +500,7 @@ export default function ProjectConsolePage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [cancelMove]);
 
   /* ---------------------------------------------------------------------
      Render
@@ -297,21 +538,56 @@ export default function ProjectConsolePage() {
         }
         action={
           <div className="flex items-center gap-2">
+            <ViewToggle
+              view={activeView}
+              onChange={openView}
+              mapAvailable={mapAvailable}
+              mapUnavailableReason={
+                mapDriver.status === "approved"
+                  ? "The approved map driver is not running."
+                  : mapDriver.pending_url
+                    ? "A map driver is waiting to be approved, under Project."
+                    : "No map driver has offered a map view for this project."
+              }
+            />
             <Button
               variant="secondary"
               size="sm"
               onClick={() => {
                 setShowSettings((open) => !open);
                 setShowViolations(false);
+                setShowDiagnostics(false);
               }}
             >
               Project
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                // Opening the panel is the "on demand" in "recompute on
+                // demand": what is on screen was true when it was fetched,
+                // and a node may have moved since.
+                const opening = !showDiagnostics;
+                setShowDiagnostics(opening);
+                setShowViolations(false);
+                setShowSettings(false);
+                if (opening) void recheck();
+              }}
+            >
+              Data quality
+              {flaggedCount > 0 ? (
+                <span className="ml-2 font-mono text-xs opacity-80">
+                  {flaggedCount}
+                </span>
+              ) : null}
             </Button>
             <Button
               size="sm"
               onClick={() => {
                 setShowViolations((open) => !open);
                 setShowSettings(false);
+                setShowDiagnostics(false);
               }}
             >
               Violations
@@ -332,10 +608,29 @@ export default function ProjectConsolePage() {
           connections={connections}
           congestionTargets={congestion}
           flash={flash}
+          nodeWarnings={nodeWarnings}
           selectedConnectionId={selected?.connection_id ?? null}
           onSelectConnection={setSelected}
           onDraftEdge={setDraft}
+          onDraftMove={setMoveDraft}
         />
+
+        {mapMounted && mapDriver.url && mapDriver.origin ? (
+          <MapView
+            active={activeView === "map"}
+            projectId={session.project_id}
+            url={mapDriver.url}
+            origin={mapDriver.origin}
+            nodes={nodes}
+            connections={connections}
+            geometry={geometry}
+            congestion={congestion}
+            diagnostics={diagnostics}
+            selectedConnectionId={selected?.connection_id ?? null}
+            onSelect={selectFromMap}
+            onNodeMoved={moveFromMap}
+          />
+        ) : null}
 
         {/* The overlay does not take pointer events; each control opts back in. */}
         <div className="pointer-events-none absolute inset-0 p-4">
@@ -351,15 +646,18 @@ export default function ProjectConsolePage() {
                 </span>
               </div>
 
-              <CanvasControls
-                onFit={() => canvas.current?.fit()}
-                onZoomIn={() => canvas.current?.zoomBy(1.2)}
-                onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
-              />
+              {/* Framing and zooming are the graph's own; the map has its own. */}
+              {activeView === "graph" ? (
+                <CanvasControls
+                  onFit={() => canvas.current?.fit()}
+                  onZoomIn={() => canvas.current?.zoomBy(1.2)}
+                  onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
+                />
+              ) : null}
             </div>
 
             <div className="flex items-end justify-between gap-4">
-              <GraphLegend />
+              {activeView === "graph" ? <GraphLegend /> : <span />}
               {selected ? (
                 <ConnectionEditor
                   connection={selected}
@@ -368,16 +666,16 @@ export default function ProjectConsolePage() {
                   onCancel={() => setSelected(null)}
                   onSave={saveEdge}
                 />
-              ) : (
+              ) : activeView === "graph" ? (
                 <p className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
-                  Drag between checkpoints to link · click an edge to edit · F to frame
+                  Drag between checkpoints to link · shift-drag to move one · F to frame
                 </p>
-              )}
+              ) : null}
             </div>
           </div>
         </div>
 
-        {loaded && nodes.length === 0 ? (
+        {loaded && nodes.length === 0 && activeView === "graph" ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
             <div className="pointer-events-auto max-w-md rounded-2xl border border-border bg-surface shadow-lg">
               <EmptyState
@@ -401,7 +699,19 @@ export default function ProjectConsolePage() {
           connectionCount={connections.length}
           driverConnected={driverConnected}
           realtimeConnected={realtimeConnected}
+          mapDriver={mapDriver}
+          onMapDriverChange={setMapDriver}
           onSignOut={signOut}
+        />
+
+        <DiagnosticsPanel
+          open={showDiagnostics}
+          onClose={() => setShowDiagnostics(false)}
+          diagnostics={diagnostics}
+          checkedAt={checkedAt}
+          busy={checking}
+          error={checkError}
+          onRecheck={() => void recheck()}
         />
 
         <ViolationsPanel
@@ -417,6 +727,13 @@ export default function ProjectConsolePage() {
         driverConnected={driverConnected}
         onClose={() => setDraft(null)}
         onCreate={createEdge}
+      />
+
+      <MoveCheckpointDialog
+        draft={moveDraft}
+        connections={connections}
+        onClose={cancelMove}
+        onConfirm={commitMove}
       />
 
       <AddCheckpointDialog

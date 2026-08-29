@@ -12,7 +12,7 @@
  */
 import { io, type Socket } from "socket.io-client";
 
-import type { Violation } from "@/lib/api";
+import type { DistanceStatus, MapDriverState, Violation } from "@/lib/api";
 
 /** Server to client. */
 export type ServerEvents = {
@@ -23,17 +23,27 @@ export type ServerEvents = {
     latitude: number;
     longitude: number;
   }) => void;
+  /** A checkpoint's position was corrected. Its edges follow, unresolved. */
+  "node-moved": (data: {
+    node_id: number;
+    id_in_project: number;
+    latitude: number;
+    longitude: number;
+  }) => void;
   "connection-added": (data: {
     connection_id: number;
     from_node_id: number;
     to_node_id: number;
-    distance: number;
+    /** Null whenever the status is not `ok`. */
+    distance: number | null;
     speed_limit: number;
+    distance_status: DistanceStatus;
   }) => void;
   "connection-updated": (data: {
     connection_id: number;
-    distance: number;
+    distance: number | null;
     speed_limit: number;
+    distance_status: DistanceStatus;
   }) => void;
   "node-triggered": (data: {
     id_in_project: number;
@@ -44,6 +54,14 @@ export type ServerEvents = {
   /** connection_id -> congestion ratio C, where 1 is free-flowing. */
   "congestion-update": (data: Record<string, number>) => void;
   "distance-driver-status": (data: { connected: boolean }) => void;
+  /**
+   * Where this project's map view stands: whether a driver is attached, and
+   * whether anyone has approved the address it announced.
+   *
+   * Sent on joining, whenever a map driver connects or drops, and after every
+   * approval decision. The console falls back to the graph view on it.
+   */
+  "map-driver-status": (data: MapDriverState) => void;
   error: (data: { message: string }) => void;
 };
 
@@ -58,7 +76,8 @@ export type ClientEvents = {
   }) => void;
   "update-connection": (data: {
     connection_id: number;
-    distance: number;
+    /** Omitted to change only the limit: the server keeps the stored distance. */
+    distance?: number;
     speed_limit: number;
   }) => void;
 };

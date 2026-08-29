@@ -79,6 +79,33 @@ export function readTokens(): Tokens {
 }
 
 /** `#19c4d8` at a given opacity, for the washes canvas draws under things. */
+const MONO_FALLBACK = '"JetBrains Mono", ui-monospace, monospace';
+let cachedMono: string | null = null;
+
+/**
+ * The mono family, in a form `ctx.font` will actually accept.
+ *
+ * Canvas parses `font` with the CSS font shorthand parser, and that parser
+ * does not resolve `var()`. Assigning a font string containing one is not an
+ * error and not a warning: the assignment is silently dropped and the context
+ * keeps the font it had, which is `10px sans-serif` - ten units of a world
+ * measured in metres, so the label is drawn a thousandth of a pixel tall and
+ * simply never appears. So the family is read off the document, the same way
+ * the colours are, and interpolated as a literal.
+ */
+export function monoFamily(): string {
+  if (cachedMono) return cachedMono;
+  if (typeof window === "undefined") return MONO_FALLBACK;
+
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue("--font-jetbrains-mono")
+    .trim();
+  // The variable names the loaded face and its metric fallback, and stops
+  // there; the generic is this file's job.
+  cachedMono = value ? `${value}, ui-monospace, monospace` : MONO_FALLBACK;
+  return cachedMono;
+}
+
 export function withAlpha(hex: string, alpha: number): string {
   const value = hex.trim();
   if (!value.startsWith("#") || (value.length !== 7 && value.length !== 4)) {

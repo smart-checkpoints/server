@@ -37,6 +37,17 @@ function parseTimestamp(timestamp: string | number | Date): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/** A calendar date. Used where the day matters and the second does not. */
+export function formatDate(timestamp: string | number | Date): string {
+  const date = parseTimestamp(timestamp);
+  if (!date) return "-";
+  return date.toLocaleDateString("en-GB", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
 /** Wall-clock time, 24 hour, to the second: violations are read as a sequence. */
 export function formatTime(timestamp: string | number | Date): string {
   const date = parseTimestamp(timestamp);

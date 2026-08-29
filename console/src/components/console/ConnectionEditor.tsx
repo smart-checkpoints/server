@@ -4,6 +4,7 @@ import { useState } from "react";
 import Button from "@/components/ui/Button";
 import Field from "@/components/ui/Field";
 import type { CheckpointNode, Connection } from "@/lib/api";
+import { isEnforced } from "@/lib/api";
 import { formatDistance } from "@/lib/format";
 
 type ConnectionEditorProps = {
@@ -11,15 +12,16 @@ type ConnectionEditorProps = {
   nodes: CheckpointNode[];
   driverConnected: boolean;
   onCancel: () => void;
-  onSave: (edge: { distanceMeters: number; speedLimitKmh: number }) => void;
+  onSave: (edge: { distanceMeters?: number; speedLimitKmh: number }) => void;
 };
 
 /**
- * A stored number as text for its field. Zero means "not set yet" for both
- * distance and speed limit, because an edge with either at zero enforces
- * nothing, so it shows as an empty field rather than as a value someone chose.
+ * A stored number as text for its field. Null, undefined and zero all show as
+ * an empty field: an edge with either number at zero enforces nothing, and an
+ * unresolved distance is not a number at all, so neither is offered back as a
+ * value someone chose.
  */
-function fieldValue(value: number | undefined): string {
+function fieldValue(value: number | null | undefined): string {
   return value ? String(value) : "";
 }
 
@@ -29,6 +31,10 @@ function fieldValue(value: number | undefined): string {
  * Distance is read-only while a driver is attached. The driver resolves it from
  * real road routing and the server overwrites anything typed here the next time
  * that driver reconnects, so offering the field would be offering a lie.
+ *
+ * An edge whose distance is unresolved shows an empty field and says why. It
+ * used to show `0`, which was a number an operator could accept and save - and
+ * saving it made the edge look configured while it went on enforcing nothing.
  */
 export default function ConnectionEditor({
   connection,
@@ -58,6 +64,15 @@ export default function ConnectionEditor({
 
   const from = nodes.find((node) => node.node_id === connection.from_node_id);
   const to = nodes.find((node) => node.node_id === connection.to_node_id);
+  const enforced = isEnforced(connection);
+
+  const distanceHint = !driverConnected
+    ? "Metres of real driving distance between the two checkpoints"
+    : enforced
+      ? `Metres, resolved by the distance driver (${formatDistance(connection.distance)})`
+      : connection.distance_status === "no-route"
+        ? "The driver found no road between these two checkpoints. Nothing is enforced here until that is corrected."
+        : "Not resolved yet. The driver fills this in; nothing is enforced here until it does.";
 
   function save() {
     if (!connection) return;
@@ -68,11 +83,18 @@ export default function ConnectionEditor({
       return;
     }
 
-    const distanceValue = driverConnected
-      ? connection.distance
-      : Number.parseFloat(distance);
-    if (!Number.isFinite(distanceValue) || distanceValue < 0) {
-      setError("A distance in metres is required.");
+    // With a driver attached the distance is not this panel's to send, so it
+    // is left out and the server keeps what it has. That is what lets the
+    // limit be edited on an edge the driver has not resolved, instead of
+    // demanding a distance the operator has no way to supply.
+    if (driverConnected) {
+      onSave({ speedLimitKmh: speedValue });
+      return;
+    }
+
+    const distanceValue = Number.parseFloat(distance);
+    if (!Number.isFinite(distanceValue) || distanceValue <= 0) {
+      setError("A distance in metres above zero is required.");
       return;
     }
 
@@ -96,13 +118,16 @@ export default function ConnectionEditor({
           min={0}
           step={0.1}
           inputMode="decimal"
-          value={driverConnected ? String(connection.distance ?? 0) : distance}
-          disabled={driverConnected}
-          hint={
+          value={
             driverConnected
-              ? `Metres, resolved by the distance driver (${formatDistance(connection.distance)})`
-              : "Metres of real driving distance between the two checkpoints"
+              ? enforced
+                ? String(connection.distance)
+                : ""
+              : distance
           }
+          placeholder={driverConnected && !enforced ? "Not resolved" : undefined}
+          disabled={driverConnected}
+          hint={distanceHint}
           onChange={(event) => {
             setDistance(event.target.value);
             if (error) setError(null);

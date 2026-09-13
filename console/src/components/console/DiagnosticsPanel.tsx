@@ -100,13 +100,11 @@ function explainNode(node: NodeDiagnostics): string[] {
 }
 
 function explainEdge(edge: EdgeDiagnostics): string {
-  return (
-    `The road between these two checkpoints is ${formatDistance(
-      edge.distance,
-    )}, shorter than the ${formatDistance(
-      edge.displacement,
-    )} straight line between them. That is not a place; it is swapped coordinates, the wrong units, or a driver returning something it should not.`
-  );
+  return `The road between these two checkpoints is ${formatDistance(
+    edge.distance,
+  )}, shorter than the ${formatDistance(
+    edge.displacement,
+  )} straight line between them. That is not a place; it is swapped coordinates, the wrong units, or a driver returning something it should not.`;
 }
 
 function Thresholds({ thresholds }: { thresholds: DiagnosticsThresholds }) {
@@ -116,8 +114,9 @@ function Thresholds({ thresholds }: { thresholds: DiagnosticsThresholds }) {
       {thresholds.min_displacement_m} m, when at least{" "}
       {Math.round(thresholds.node_flag_fraction * 100)}% of a checkpoint&rsquo;s{" "}
       {thresholds.node_min_edges} or more such connections are over it, or when
-      a driver reports a coordinate more than {thresholds.endpoint_offset_flag_m}{" "}
-      m from the nearest road. These are starting points, not tuned values.
+      a driver reports a coordinate more than{" "}
+      {thresholds.endpoint_offset_flag_m} m from the nearest road. These are
+      starting points, not tuned values.
     </p>
   );
 }
@@ -147,23 +146,34 @@ export default function DiagnosticsPanel({
     ? diagnostics.nodes.filter((node) => node.flags.length > 0)
     : [];
   const impossibleEdges = diagnostics
-    ? diagnostics.connections.filter((edge) => edge.flags.includes("impossible"))
+    ? diagnostics.connections.filter((edge) =>
+        edge.flags.includes("impossible"),
+      )
     : [];
   const circuitousEdges = diagnostics
-    ? diagnostics.connections.filter((edge) => edge.flags.includes("circuitous"))
+    ? diagnostics.connections.filter((edge) =>
+        edge.flags.includes("circuitous"),
+      )
     : [];
 
   return (
     <Panel
       open={open}
       onClose={onClose}
-      title="Data quality"
+      title="Quality"
       footer={
         <div className="flex items-center justify-between gap-3">
           <span className="font-mono text-xs text-text-dim">
-            {checkedAt === null ? "Not checked yet" : `Checked ${formatTime(checkedAt)}`}
+            {checkedAt === null
+              ? "Not checked yet"
+              : `Checked ${formatTime(checkedAt)}`}
           </span>
-          <Button variant="secondary" size="sm" onClick={onRecheck} disabled={busy}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={onRecheck}
+            disabled={busy}
+          >
             {busy ? "Checking" : "Recheck"}
           </Button>
         </div>
@@ -200,7 +210,12 @@ export default function DiagnosticsPanel({
                 </h3>
                 <div className="flex shrink-0 gap-1.5">
                   {node.flags.map((flag) => (
-                    <Badge key={flag} tone="yellow" mono className="px-2.5 py-1">
+                    <Badge
+                      key={flag}
+                      tone="yellow"
+                      mono
+                      className="px-2.5 py-1"
+                    >
                       {flag === "off-network" ? "Off network" : "Suspect"}
                     </Badge>
                   ))}
@@ -208,7 +223,10 @@ export default function DiagnosticsPanel({
               </header>
 
               {explainNode(node).map((line) => (
-                <p key={line} className="mt-2 text-sm leading-relaxed text-text-dim">
+                <p
+                  key={line}
+                  className="mt-2 text-sm leading-relaxed text-text-dim"
+                >
                   {line}
                 </p>
               ))}
@@ -244,7 +262,8 @@ export default function DiagnosticsPanel({
             <article key={edge.connection_id} className="px-5 py-4">
               <header className="flex items-center justify-between gap-3">
                 <h3 className="font-display text-sm font-bold text-text">
-                  Checkpoint {edge.from_id_in_project} to {edge.to_id_in_project}
+                  Checkpoint {edge.from_id_in_project} to{" "}
+                  {edge.to_id_in_project}
                 </h3>
                 <Badge tone="red" mono className="shrink-0 px-2.5 py-1">
                   Impossible

@@ -70,9 +70,7 @@ export type Connection = {
 };
 
 /** Whether this edge may decide a violation. The server asks the same question. */
-export function isEnforced(edge: {
-  distance_status: DistanceStatus;
-}): boolean {
+export function isEnforced(edge: { distance_status: DistanceStatus }): boolean {
   return edge.distance_status === "ok";
 }
 
@@ -133,7 +131,10 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
   const { method = "GET", body, apiKey, adminPassword, signal } = options;
 
   const headers: Record<string, string> = { accept: "application/json" };
@@ -190,7 +191,9 @@ export function getThumbnailData(
   projectId: number,
   signal?: AbortSignal,
 ): Promise<ThumbnailData> {
-  return request<ThumbnailData>(`/project/${projectId}/thumbnail-data`, { signal });
+  return request<ThumbnailData>(`/project/${projectId}/thumbnail-data`, {
+    signal,
+  });
 }
 
 export function createProject(
@@ -219,7 +222,10 @@ export function getNodes(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<CheckpointNode[]> {
-  return request<CheckpointNode[]>(`/project/${projectId}/nodes`, { apiKey, signal });
+  return request<CheckpointNode[]>(`/project/${projectId}/nodes`, {
+    apiKey,
+    signal,
+  });
 }
 
 export function getConnections(
@@ -317,7 +323,7 @@ export function updateConnection(
 }
 
 /* -------------------------------------------------------------------------
-   Data quality
+   Quality
 
    What is wrong with the graph, computed by the server on request and never
    stored. Every flag arrives with the numbers that produced it and with the
@@ -571,7 +577,10 @@ export function getViolations(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<Violation[]> {
-  return request<Violation[]>(`/project/${projectId}/violations`, { apiKey, signal });
+  return request<Violation[]>(`/project/${projectId}/violations`, {
+    apiKey,
+    signal,
+  });
 }
 
 export function getDistanceDriverStatus(
@@ -579,7 +588,10 @@ export function getDistanceDriverStatus(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<{ connected: boolean }> {
-  return request(`/project/${projectId}/distance-driver-status`, { apiKey, signal });
+  return request(`/project/${projectId}/distance-driver-status`, {
+    apiKey,
+    signal,
+  });
 }
 
 /* -------------------------------------------------------------------------
@@ -632,7 +644,9 @@ export function revokeReporterKey(
    Administration
    ------------------------------------------------------------------------- */
 
-export function adminAuthenticate(password: string): Promise<{ success: boolean }> {
+export function adminAuthenticate(
+  password: string,
+): Promise<{ success: boolean }> {
   return request("/admin/auth", { method: "POST", body: { password } });
 }
 

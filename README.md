@@ -52,12 +52,12 @@ serves it. For anything touching data, `npm run build` and reload.</sub>
 
 Copy `.env.example` to `.env`.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `PORT` | `3000` | Port for the API, the console, and both realtime channels. |
-| `HOST` | `127.0.0.1` | Interfaces to listen on. Loopback by default: nothing else on the network can reach the server. Set `0.0.0.0` for cameras and drivers. |
-| `ADMIN_PASSWORD` | *(none)* | Guards `/admin`. **Unset switches administration off entirely.** |
-| `WIFI_ADAPTER_NAME` | *(none)* | Adapter whose IPv4 address is printed at startup, so cameras on the same network know where to report. |
+| Variable            | Default     | Meaning                                                                                                                                |
+| ------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `PORT`              | `3000`      | Port for the API, the console, and both realtime channels.                                                                             |
+| `HOST`              | `127.0.0.1` | Interfaces to listen on. Loopback by default: nothing else on the network can reach the server. Set `0.0.0.0` for cameras and drivers. |
+| `ADMIN_PASSWORD`    | _(none)_    | Guards `/admin`. **Unset switches administration off entirely.**                                                                       |
+| `WIFI_ADAPTER_NAME` | _(none)_    | Adapter whose IPv4 address is printed at startup, so cameras on the same network know where to report.                                 |
 
 `/admin` lists every project together with its API key, and a project API key is
 full read and write on that project. Set `ADMIN_PASSWORD` to something real on
@@ -70,10 +70,10 @@ set; open says so and prints the address cameras should report to.
 
 Two kinds of key, because a camera is not a console.
 
-| Role | Held by | Can do |
-| --- | --- | --- |
-| `operator` | the console, administrators, the distance driver | everything, on its own project |
-| `reporter` | one camera each | `POST /report-checkpoint`, for its own project |
+| Role       | Held by                                          | Can do                                         |
+| ---------- | ------------------------------------------------ | ---------------------------------------------- |
+| `operator` | the console, administrators, the distance driver | everything, on its own project                 |
+| `reporter` | one camera each                                  | `POST /report-checkpoint`, for its own project |
 
 A project's key - the one `/create-project` returns and `/admin` lists - is its
 operator key, and is unchanged. Reporter keys are issued per camera, from the
@@ -107,11 +107,11 @@ than an operator key, which is most of the reason the split exists.
 An edge enforces nothing until somebody has said how long it is. Which of those
 two an edge is in, is a column rather than an inference:
 
-| `distance_status` | Meaning | Violation checks |
-| --- | --- | --- |
-| `ok` | A driver routed it, or an operator typed it | Run normally |
-| `unknown` | Nobody has answered, or a driver failed | **Skipped.** Shown as not enforced |
-| `no-route` | A driver says there is no road here | **Skipped.** Flagged as a data error |
+| `distance_status` | Meaning                                     | Violation checks                     |
+| ----------------- | ------------------------------------------- | ------------------------------------ |
+| `ok`              | A driver routed it, or an operator typed it | Run normally                         |
+| `unknown`         | Nobody has answered, or a driver failed     | **Skipped.** Shown as not enforced   |
+| `no-route`        | A driver says there is no road here         | **Skipped.** Flagged as a data error |
 
 `connections.distance` is NULL whenever the status is not `ok`, and a distance
 of zero is rejected on the way in. Both the violation path and the congestion
@@ -168,10 +168,14 @@ machine that started it rather than sitting there connected and idle.
 never has to know which protocol version it is talking to:
 
 ```jsonc
-{ "type": "calculate-distance", "requestId": "...",
-  "fromIdInProject": 0, "toIdInProject": 1,
+{
+  "type": "calculate-distance",
+  "requestId": "...",
+  "fromIdInProject": 0,
+  "toIdInProject": 1,
   "from": { "latitude": 31.2001, "longitude": 29.9187 },
-  "to":   { "latitude": 31.2054, "longitude": 29.9245 } }
+  "to": { "latitude": 31.2054, "longitude": 29.9245 },
+}
 ```
 
 **Results may carry geometry.** `path` is a GeoJSON `LineString` in WGS84,
@@ -217,7 +221,7 @@ project's slot in about ninety seconds rather than whenever TCP notices, and
 every request it still owed an answer for is failed immediately rather than left
 on the thirty-second timer.
 
-## Data quality
+## Quality
 
 A camera reports where it thinks it is, and nothing downstream questions it. A
 bad GPS fix therefore does not fail: it produces enforcement measured between
@@ -231,17 +235,17 @@ positions, road distances, and the offsets a driver reported between the
 coordinates it was given and the road network it routed on - and one aggregate
 over them:
 
-| Flag | On | Means |
-| --- | --- | --- |
-| `off-network` | a checkpoint | A driver reported this coordinate more than 150 m from the nearest road it could route on |
-| `impossible` | an edge | The road is shorter than the straight line - swapped coordinates, wrong units, or a broken driver |
-| `circuitous` | an edge | The road is at least 2.5x the straight line, on an edge at least 250 m long |
+| Flag               | On           | Means                                                                                                         |
+| ------------------ | ------------ | ------------------------------------------------------------------------------------------------------------- |
+| `off-network`      | a checkpoint | A driver reported this coordinate more than 150 m from the nearest road it could route on                     |
+| `impossible`       | an edge      | The road is shorter than the straight line - swapped coordinates, wrong units, or a broken driver             |
+| `circuitous`       | an edge      | The road is at least 2.5x the straight line, on an edge at least 250 m long                                   |
 | `suspect-position` | a checkpoint | At least two thirds of this checkpoint's judgeable edges are circuitous, and there are at least three of them |
 
 The last row is the one that matters. A single circuitous edge is almost always
 real geography - a river with a distant bridge, a rail corridor, a one-way
 system - and flagging per edge produces false positives forever. A checkpoint
-with a bad fix inflates *every* edge that touches it, so the fraction is what
+with a bad fix inflates _every_ edge that touches it, so the fraction is what
 separates a misplaced camera from an awkward junction, and it points at the
 thing an operator can actually fix.
 
@@ -336,10 +340,10 @@ the project, and it could paint a convincing fake console around them.
 
 So an announcement is a proposal:
 
-| Status | Meaning |
-| --- | --- |
-| `none` | Nothing announced, or approval withdrawn. Graph view only |
-| `pending` | A driver named an address nobody has agreed to. Not embedded |
+| Status     | Meaning                                                         |
+| ---------- | --------------------------------------------------------------- |
+| `none`     | Nothing announced, or approval withdrawn. Graph view only       |
+| `pending`  | A driver named an address nobody has agreed to. Not embedded    |
 | `approved` | An operator approved this address. The only status that renders |
 
 The announced address lands in `pending_map_driver_url`, and an operator

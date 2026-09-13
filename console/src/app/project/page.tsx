@@ -64,7 +64,7 @@ export default function ProjectConsolePage() {
   const [congestion, setCongestion] = useState<Record<number, number>>({});
   const [flash, setFlash] = useState<FlashSignal | null>(null);
 
-  /* Data quality is derived, never stored, and goes stale the moment a node
+  /* Quality is derived, never stored, and goes stale the moment a node
      moves - so it is held here for exactly as long as it is being looked at,
      and recomputed rather than updated. */
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
@@ -123,11 +123,17 @@ export default function ProjectConsolePage() {
           getNodes(projectId, apiKey, controller.signal).catch(() => []),
           getConnections(projectId, apiKey, controller.signal).catch(() => []),
           getViolations(projectId, apiKey, controller.signal).catch(() => []),
-          getDistanceDriverStatus(projectId, apiKey, controller.signal).catch(() => ({
-            connected: false,
-          })),
-          getDiagnostics(projectId, apiKey, controller.signal).catch(() => null),
-          getMapDriverState(projectId, apiKey, controller.signal).catch(() => null),
+          getDistanceDriverStatus(projectId, apiKey, controller.signal).catch(
+            () => ({
+              connected: false,
+            }),
+          ),
+          getDiagnostics(projectId, apiKey, controller.signal).catch(
+            () => null,
+          ),
+          getMapDriverState(projectId, apiKey, controller.signal).catch(
+            () => null,
+          ),
         ]);
 
       if (controller.signal.aborted) return;
@@ -230,7 +236,8 @@ export default function ProjectConsolePage() {
     channel.on("congestion-update", (data) => {
       setCongestion((current) => {
         const next = { ...current };
-        for (const [id, ratio] of Object.entries(data)) next[Number(id)] = ratio;
+        for (const [id, ratio] of Object.entries(data))
+          next[Number(id)] = ratio;
         return next;
       });
     });
@@ -261,7 +268,8 @@ export default function ProjectConsolePage() {
      driver that drops falls back to the graph without anything to dismiss, and
      one that comes back picks up where it was, because falling back was never
      a decision the operator made. */
-  const activeView: ConsoleView = view === "map" && mapAvailable ? "map" : "graph";
+  const activeView: ConsoleView =
+    view === "map" && mapAvailable ? "map" : "graph";
   const mapMounted = mapAvailable && mapEverOpened;
 
   /**
@@ -316,7 +324,8 @@ export default function ProjectConsolePage() {
     (selection: BridgeSelection) => {
       if (selection.kind === "edge") {
         setSelected(
-          connections.find((edge) => edge.connection_id === selection.id) ?? null,
+          connections.find((edge) => edge.connection_id === selection.id) ??
+            null,
         );
         return;
       }
@@ -407,7 +416,7 @@ export default function ProjectConsolePage() {
   );
 
   /* ---------------------------------------------------------------------
-     Data quality
+     Quality
      --------------------------------------------------------------------- */
 
   const recheck = useCallback(async () => {
@@ -494,7 +503,8 @@ export default function ProjectConsolePage() {
         return;
       }
       if (event.key === "+" || event.key === "=") canvas.current?.zoomBy(1.2);
-      if (event.key === "-" || event.key === "_") canvas.current?.zoomBy(1 / 1.2);
+      if (event.key === "-" || event.key === "_")
+        canvas.current?.zoomBy(1 / 1.2);
       if (event.key === "f" || event.key === "F") canvas.current?.fit();
     };
 
@@ -575,7 +585,7 @@ export default function ProjectConsolePage() {
                 if (opening) void recheck();
               }}
             >
-              Data quality
+              Quality
               {flaggedCount > 0 ? (
                 <span className="ml-2 font-mono text-xs opacity-80">
                   {flaggedCount}
@@ -637,7 +647,11 @@ export default function ProjectConsolePage() {
           <div className="flex h-full flex-col justify-between">
             <div className="flex items-start justify-between gap-4">
               <div className="pointer-events-auto flex items-center gap-2">
-                <Button size="sm" variant="secondary" onClick={() => setAddingCheckpoint(true)}>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => setAddingCheckpoint(true)}
+                >
                   Add checkpoint
                 </Button>
                 <span className="hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm sm:inline">
@@ -668,7 +682,8 @@ export default function ProjectConsolePage() {
                 />
               ) : activeView === "graph" ? (
                 <p className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
-                  Drag between checkpoints to link · shift-drag to move one · F to frame
+                  Drag between checkpoints to link · shift-drag to move one · F
+                  to frame
                 </p>
               ) : null}
             </div>
@@ -682,7 +697,11 @@ export default function ProjectConsolePage() {
                 title="No checkpoints yet"
                 body="Cameras create checkpoints as they come online, over the REST API. You can also place one by coordinate to lay the graph out ahead of them."
                 action={
-                  <Button size="md" arrow onClick={() => setAddingCheckpoint(true)}>
+                  <Button
+                    size="md"
+                    arrow
+                    onClick={() => setAddingCheckpoint(true)}
+                  >
                     Add checkpoint
                   </Button>
                 }

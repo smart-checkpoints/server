@@ -13,10 +13,13 @@ type DriverStatusProps = {
  * routing and the distance fields go read-only, without one they are typed in
  * by hand and are only ever as good as the person typing.
  */
-export default function DriverStatus({ connected, className }: DriverStatusProps) {
+export default function DriverStatus({
+  connected,
+  className,
+}: DriverStatusProps) {
   return (
     <Badge tone={connected ? "green" : "yellow"} mono className={className}>
-      {connected ? "Driver attached" : "No driver"}
+      {connected ? "Driver" : "No driver"}
     </Badge>
   );
 }

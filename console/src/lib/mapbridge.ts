@@ -4,7 +4,7 @@
  * The console holds the single Socket.IO connection to the server and forwards
  * what it hears into the iframe. The map driver never opens a socket of its
  * own, never talks to the distance driver, and never holds an API key: it is
- * handed state and hands back three things. That is the whole of the
+ * handed state and hands back four things. That is the whole of the
  * micro-frontend split, and it is why an eleventh distance driver costs a map
  * driver nothing.
  *
@@ -105,6 +105,8 @@ export function postToMap(
 export type MapCapabilities = {
   /** Whether this map lets an operator drag a checkpoint to a new position. */
   nodeDrag?: boolean;
+  /** Whether this map lets an operator pick a spot to place a new checkpoint. */
+  placeNode?: boolean;
 };
 
 export type FromMapMessage =
@@ -116,7 +118,8 @@ export type FromMapMessage =
   | {
       type: "sc:node-moved";
       payload: { nodeId: number; latitude: number; longitude: number };
-    };
+    }
+  | { type: "sc:place"; payload: { latitude: number; longitude: number } };
 
 /* -------------------------------------------------------------------------
    Validation
@@ -184,7 +187,10 @@ export function readMapMessage(
         type: "sc:ready",
         payload: {
           protocolVersion: version ?? 1,
-          capabilities: { nodeDrag: declared.nodeDrag === true },
+          capabilities: {
+            nodeDrag: declared.nodeDrag === true,
+            placeNode: declared.placeNode === true,
+          },
         },
       };
     }
@@ -207,6 +213,16 @@ export function readMapMessage(
           latitude: position.lat,
           longitude: position.lng,
         },
+      };
+    }
+
+    case "sc:place": {
+      if (!payload) return null;
+      const position = coordinate(payload.latitude, payload.longitude);
+      if (!position) return null;
+      return {
+        type: "sc:place",
+        payload: { latitude: position.lat, longitude: position.lng },
       };
     }
 

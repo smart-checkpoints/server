@@ -36,6 +36,8 @@ type MapViewProps = {
   onSelect: (selection: BridgeSelection) => void;
   /** A checkpoint dragged on the basemap. Confirmed before anything is written. */
   onNodeMoved: (nodeId: number, position: { lat: number; lng: number }) => void;
+  /** A spot right-clicked on the basemap, to place a new checkpoint at. */
+  onPlace: (position: { lat: number; lng: number }) => void;
 };
 
 /** What a node looks like on the wire, and what changing it means. */
@@ -77,6 +79,7 @@ export default function MapView({
   selectedConnectionId,
   onSelect,
   onNodeMoved,
+  onPlace,
 }: MapViewProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
@@ -207,12 +210,22 @@ export default function MapView({
             lng: message.payload.longitude,
           });
           break;
+
+        case "sc:place":
+          // Same rule as a move: only from a driver that declared it. It only
+          // opens the dialog; nothing is created until the operator says so.
+          if (!capabilities.current.placeNode) return;
+          onPlace({
+            lat: message.payload.latitude,
+            lng: message.payload.longitude,
+          });
+          break;
       }
     };
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [origin, sameOrigin, onSelect, onNodeMoved]);
+  }, [origin, sameOrigin, onSelect, onNodeMoved, onPlace]);
 
   /* ---------------------------------------------------------------------
      Forwarding

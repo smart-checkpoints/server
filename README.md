@@ -378,8 +378,10 @@ console at all, and a map driver serves its page from its own process.
 
 Console to frame: `sc:init`, `sc:graph`, `sc:node-updated`, `sc:edge-updated`,
 `sc:congestion`, `sc:diagnostics`, `sc:selection`. Frame to console:
-`sc:ready`, `sc:select`, and `sc:node-moved` from a driver that declared
-`capabilities.nodeDrag`. The contract is typed in `console/src/lib/mapbridge.ts`
+`sc:ready`, `sc:select`, `sc:node-moved` from a driver that declared
+`capabilities.nodeDrag`, and `sc:place` from one that declared
+`capabilities.placeNode`, which opens the add-checkpoint dialog with that
+coordinate filled in. The contract is typed in `console/src/lib/mapbridge.ts`
 and spelled nowhere else in the console.
 
 Everything arriving from the frame is validated at runtime - shape, coordinate

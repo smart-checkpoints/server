@@ -9,9 +9,15 @@ import { docsLinks } from "@/lib/site";
 
 type AddCheckpointDialogProps = {
   open: boolean;
+  /** A spot picked on the map, pre-filled so the operator only has to confirm. */
+  initialPosition?: { lat: number; lng: number } | null;
   onClose: () => void;
   onCreate: (position: { lat: number; lng: number }) => Promise<void>;
 };
+
+function formatDegrees(value: number): string {
+  return String(Number(value.toFixed(6)));
+}
 
 /**
  * Placing a checkpoint by coordinate.
@@ -24,6 +30,7 @@ type AddCheckpointDialogProps = {
  */
 export default function AddCheckpointDialog({
   open,
+  initialPosition = null,
   onClose,
   onCreate,
 }: AddCheckpointDialogProps) {
@@ -36,8 +43,9 @@ export default function AddCheckpointDialog({
   if (open !== wasOpen) {
     setWasOpen(open);
     if (open) {
-      setLatitude("");
-      setLongitude("");
+      // Six decimal places is about 10 cm, finer than any camera's GPS fix.
+      setLatitude(initialPosition ? formatDegrees(initialPosition.lat) : "");
+      setLongitude(initialPosition ? formatDegrees(initialPosition.lng) : "");
       setError(null);
       setBusy(false);
     }

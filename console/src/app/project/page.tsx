@@ -101,6 +101,9 @@ export default function ProjectConsolePage() {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [addingCheckpoint, setAddingCheckpoint] = useState(false);
+  const [placeAt, setPlaceAt] = useState<{ lat: number; lng: number } | null>(
+    null,
+  );
 
   const router = useRouter();
   const canvas = useRef<GraphCanvasHandle>(null);
@@ -188,6 +191,11 @@ export default function ProjectConsolePage() {
     });
 
     channel.on("connection-added", (data) => {
+      // A driver answers before the edge is created, so a new edge can arrive
+      // with its road shape already stored. Only a measured edge can have one.
+      if (data.distance_status === "ok") {
+        setGeometryVersion((version) => version + 1);
+      }
       setConnections((current) =>
         current.some((edge) => edge.connection_id === data.connection_id)
           ? current
@@ -332,6 +340,15 @@ export default function ProjectConsolePage() {
       if (selection.kind === null) setSelected(null);
     },
     [connections],
+  );
+
+  /** The add dialog, blank from a button or pre-filled from a map right-click. */
+  const openAddCheckpoint = useCallback(
+    (position: { lat: number; lng: number } | null) => {
+      setPlaceAt(position);
+      setAddingCheckpoint(true);
+    },
+    [],
   );
 
   /**
@@ -639,6 +656,7 @@ export default function ProjectConsolePage() {
             selectedConnectionId={selected?.connection_id ?? null}
             onSelect={selectFromMap}
             onNodeMoved={moveFromMap}
+            onPlace={openAddCheckpoint}
           />
         ) : null}
 
@@ -650,7 +668,7 @@ export default function ProjectConsolePage() {
                 <Button
                   size="sm"
                   variant="secondary"
-                  onClick={() => setAddingCheckpoint(true)}
+                  onClick={() => openAddCheckpoint(null)}
                 >
                   Add checkpoint
                 </Button>
@@ -700,7 +718,7 @@ export default function ProjectConsolePage() {
                   <Button
                     size="md"
                     arrow
-                    onClick={() => setAddingCheckpoint(true)}
+                    onClick={() => openAddCheckpoint(null)}
                   >
                     Add checkpoint
                   </Button>
@@ -757,6 +775,7 @@ export default function ProjectConsolePage() {
 
       <AddCheckpointDialog
         open={addingCheckpoint}
+        initialPosition={placeAt}
         onClose={() => setAddingCheckpoint(false)}
         onCreate={addCheckpoint}
       />

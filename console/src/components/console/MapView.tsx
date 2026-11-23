@@ -7,6 +7,7 @@ import {
   readMapMessage,
   type BridgeEdge,
   type BridgeNode,
+  type BridgeMode,
   type BridgeSelection,
   type BridgeVehicle,
   type MapCapabilities,
@@ -44,6 +45,8 @@ type MapViewProps = {
    * can take one. A ref rather than a prop because the car moves every frame.
    */
   vehicleSinkRef?: React.RefObject<((vehicle: BridgeVehicle) => void) | null>;
+  /** A test drive picking checkpoints, so the map picks instead of moving. */
+  mode?: BridgeMode;
 };
 
 /** What a node looks like on the wire, and what changing it means. */
@@ -87,6 +90,7 @@ export default function MapView({
   onNodeMoved,
   onPlace,
   vehicleSinkRef,
+  mode,
 }: MapViewProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
@@ -176,6 +180,17 @@ export default function MapView({
     },
     [origin],
   );
+
+  const modeOn = mode?.testDrive ?? false;
+  const modeStart = mode?.start ?? null;
+  const modeEnd = mode?.end ?? null;
+  useEffect(() => {
+    if (!ready) return;
+    send({
+      type: "sc:mode",
+      payload: { testDrive: modeOn, start: modeStart, end: modeEnd },
+    });
+  }, [ready, modeOn, modeStart, modeEnd, send]);
 
   /* The test car's channel exists only while the frame can draw one. */
   useEffect(() => {

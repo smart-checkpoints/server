@@ -103,6 +103,9 @@ export default function ProjectConsolePage() {
   /* A demo project can drive a test car between checkpoints. */
   const [isDemo, setIsDemo] = useState(false);
   const [testDriveOpen, setTestDriveOpen] = useState(false);
+  const [picks, setPicks] = useState<{ start: number | null; end: number | null }>(
+    { start: null, end: null },
+  );
   const testDrive = useRef<TestDriveHandle>(null);
   const mapVehicle = useRef<((vehicle: BridgeVehicle) => void) | null>(null);
 
@@ -408,6 +411,8 @@ export default function ProjectConsolePage() {
    */
   const moveFromMap = useCallback(
     (nodeId: number, to: { lat: number; lng: number }) => {
+      // A test drive picks checkpoints; it never moves them.
+      if (testDriveOpen) return;
       const node = nodes.find((candidate) => candidate.node_id === nodeId);
       if (!node) return;
       setMoveDraft({
@@ -419,7 +424,7 @@ export default function ProjectConsolePage() {
         ),
       });
     },
-    [nodes],
+    [nodes, testDriveOpen],
   );
 
   /* ---------------------------------------------------------------------
@@ -697,6 +702,8 @@ export default function ProjectConsolePage() {
               ? (node) => testDrive.current?.pick(node.node_id)
               : undefined
           }
+          pickMode={testDriveOpen}
+          picks={testDriveOpen ? picks : undefined}
         />
 
         {mapMounted && mapDriver.url && mapDriver.origin ? (
@@ -715,6 +722,11 @@ export default function ProjectConsolePage() {
             onNodeMoved={moveFromMap}
             onPlace={openAddCheckpoint}
             vehicleSinkRef={mapVehicle}
+            mode={{
+              testDrive: testDriveOpen,
+              start: testDriveOpen ? picks.start : null,
+              end: testDriveOpen ? picks.end : null,
+            }}
           />
         ) : null}
 
@@ -736,6 +748,7 @@ export default function ProjectConsolePage() {
                     variant={testDriveOpen ? "primary" : "secondary"}
                     onClick={() => {
                       setTestDriveOpen((open) => !open);
+                      setPicks({ start: null, end: null });
                       setSelected(null);
                     }}
                   >
@@ -768,6 +781,7 @@ export default function ProjectConsolePage() {
                   connections={connections}
                   geometry={geometry}
                   onVehicle={showVehicle}
+                  onPicks={setPicks}
                   onClose={() => setTestDriveOpen(false)}
                 />
               ) : selected ? (

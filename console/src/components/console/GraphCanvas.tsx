@@ -129,6 +129,13 @@ type GraphCanvasProps = {
   onDraftMove: (draft: MoveDraft) => void;
   /** A checkpoint clicked without dragging. */
   onClickNode?: (node: CheckpointNode) => void;
+  /**
+   * A test drive is picking checkpoints: a press on one is a pick, never a
+   * move or a new edge.
+   */
+  pickMode?: boolean;
+  /** The checkpoints a test drive has picked, ringed and named on the canvas. */
+  picks?: { start: number | null; end: number | null };
 };
 
 /** How fast a congestion colour moves toward its new value, per frame. */
@@ -162,6 +169,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onDraftEdge,
       onDraftMove,
       onClickNode,
+      pickMode = false,
+      picks,
     },
     ref,
   ) {
@@ -183,6 +192,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       congestionTargets,
       nodeWarnings,
       selectedConnectionId,
+      picks,
+      pickMode,
     });
     data.current = {
       nodes,
@@ -190,6 +201,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       congestionTargets,
       nodeWarnings,
       selectedConnectionId,
+      picks,
+      pickMode,
     };
 
     /* Animated values. These move every frame, so they never touch React
@@ -658,7 +671,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         }
 
         /* The edge being drawn out of a checkpoint. */
-        if (state.mode === "linking" && state.linkFrom) {
+        if (state.mode === "linking" && state.linkFrom && !data.current.pickMode) {
           const from = positions.get(state.linkFrom.node_id);
           if (from) {
             const to = toWorld(state.pointerX, state.pointerY);
@@ -720,6 +733,27 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           if (warnings[node.node_id]) {
             drawWarningBadge(ctx, tokens, point, nodeRadius, zoom);
           }
+
+          const pick =
+            data.current.picks?.start === node.node_id
+              ? "START"
+              : data.current.picks?.end === node.node_id
+                ? "END"
+                : null;
+          if (pick) {
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, nodeRadius + 7 / zoom, 0, Math.PI * 2);
+            ctx.lineWidth = 3 / zoom;
+            ctx.strokeStyle = tokens.cyan;
+            ctx.stroke();
+            ctx.font = `700 ${11 / zoom}px ${monoFamily()}`;
+            ctx.lineWidth = 3 / zoom;
+            ctx.strokeStyle = tokens.bg;
+            ctx.strokeText(pick, point.x, point.y + nodeRadius + 18 / zoom);
+            ctx.fillStyle = tokens.cyanDark;
+            ctx.fillText(pick, point.x, point.y + nodeRadius + 18 / zoom);
+            ctx.font = `600 ${(NODE_RADIUS * 0.72) / zoom}px ${monoFamily()}`;
+          }
         }
 
         /* A demo project's test car, above everything it drives past. */
@@ -762,7 +796,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     /* Redraw whenever the data behind the frame changes. */
     useEffect(() => {
       paintNow();
-    }, [nodes, connections, nodeWarnings, selectedConnectionId, paintNow]);
+    }, [nodes, connections, nodeWarnings, selectedConnectionId, picks, paintNow]);
 
     /* New congestion figures do not snap: the colour walks to them. */
     useEffect(() => {
@@ -813,7 +847,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         // Drawing the graph is the frequent action and keeps the unmodified
         // gesture; moving a camera changes what counts as speeding, so it is
         // the deliberate one - and it still has to be confirmed after that.
-        if (event.shiftKey) {
+        if (event.shiftKey && !pickMode) {
           state.mode = "moving";
           state.moveNode = node;
           movePreview.current = {
@@ -891,8 +925,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
               `Checkpoint ${node.id_in_project}`,
               `${node.latitude.toFixed(5)}, ${node.longitude.toFixed(5)}`,
               ...(warning ? [warning] : []),
-              "Drag to another checkpoint to link",
-              "Shift-drag to correct its position",
+              ...(pickMode
+                ? ["Click to pick it for the test drive"]
+                : [
+                    "Drag to another checkpoint to link",
+                    "Shift-drag to correct its position",
+                  ]),
             ],
           });
         } else if (edge) {
@@ -959,7 +997,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       if (state.mode === "linking" && state.linkFrom) {
         const target = nodeAt(world.x, world.y);
-        if (target && target.node_id !== state.linkFrom.node_id) {
+        if (pickMode) {
+          // A test drive picks the checkpoint the press started on.
+          if (!state.moved && target?.node_id === state.linkFrom.node_id) {
+            onClickNode?.(target);
+          }
+        } else if (target && target.node_id !== state.linkFrom.node_id) {
           onDraftEdge({ from: state.linkFrom, to: target });
         } else if (target && !state.moved) {
           // Pressed and released on the same checkpoint: a click, not a link.

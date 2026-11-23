@@ -82,7 +82,19 @@ export type ToMapMessage =
       };
     }
   | { type: "sc:selection"; payload: BridgeSelection }
-  | { type: "sc:vehicle"; payload: BridgeVehicle };
+  | { type: "sc:vehicle"; payload: BridgeVehicle }
+  | { type: "sc:mode"; payload: BridgeMode };
+
+/**
+ * Whether a demo project's test drive is picking checkpoints, and which it has
+ * picked. While it is on, a map should pick checkpoints on click and never
+ * offer to move one.
+ */
+export type BridgeMode = {
+  testDrive: boolean;
+  start: number | null;
+  end: number | null;
+};
 
 /**
  * A demo project's test car, or `position: null` to take it off the map. Sent

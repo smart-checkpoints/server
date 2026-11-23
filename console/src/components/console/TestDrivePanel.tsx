@@ -55,6 +55,8 @@ type TestDrivePanelProps = {
   connections: Connection[];
   geometry: Record<number, PathGeometry>;
   onVehicle: (vehicle: VehicleFrame | null) => void;
+  /** The checkpoints picked so far, for the views to ring and name. */
+  onPicks: (picks: { start: number | null; end: number | null }) => void;
   onClose: () => void;
 };
 
@@ -70,7 +72,7 @@ const MAX_SPEED = 200;
  */
 const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
   function TestDrivePanel(
-    { apiKey, nodes, connections, geometry, onVehicle, onClose },
+    { apiKey, nodes, connections, geometry, onVehicle, onPicks, onClose },
     ref,
   ) {
     const [phase, setPhase] = useState<Phase>("start");
@@ -120,7 +122,8 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
       setTable(null);
       setPlate(null);
       setProgress(0);
-    }, [stop, onVehicle]);
+      onPicks({ start: null, end: null });
+    }, [stop, onVehicle, onPicks]);
 
     useImperativeHandle(
       ref,
@@ -131,6 +134,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
             if (nodeId === startId) return;
             setEndId(nodeId);
             setPhase("ready");
+            onPicks({ start: startId, end: nodeId });
             const planned =
               startId === null ? null : planRoute(startId, nodeId, nodes, connections);
             if (planned) {
@@ -148,9 +152,10 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
           setPlate(null);
           setProgress(0);
           setPhase("end");
+          onPicks({ start: nodeId, end: null });
         },
       }),
-      [phase, startId, nodes, connections, onVehicle],
+      [phase, startId, nodes, connections, onVehicle, onPicks],
     );
 
     const drive = useCallback(() => {
@@ -247,6 +252,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
     const close = () => {
       stop();
       onVehicle(null);
+      onPicks({ start: null, end: null });
       onClose();
     };
 
@@ -257,7 +263,54 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
           ? `From checkpoint ${label(startId)}. Click where it drives to.`
           : null;
 
+    const violations = outcomes.filter(
+      (outcome) => outcome !== null && "status" in outcome && outcome.status,
+    ).length;
+    const step = phase === "start" ? 1 : phase === "end" ? 2 : 3;
+    const banner =
+      phase === "start"
+        ? "Click the checkpoint the car starts from"
+        : phase === "end"
+          ? `Starting at checkpoint ${label(startId)} · click where it drives to`
+          : phase === "ready"
+            ? route
+              ? "Choose a speed, then press Drive"
+              : "No road leads there · click another checkpoint"
+            : phase === "driving"
+              ? `Driving ${plate ?? ""} at ${speed} km/h · reporting each checkpoint to the server`
+              : violations > 0
+                ? `Done · the server recorded ${violations} violation${violations === 1 ? "" : "s"}`
+                : "Done · the server recorded no violation";
+
     return (
+      <>
+        {/* Clicks pass through, so a checkpoint under the banner can still be
+            picked; only Exit takes them. */}
+        <div className="pointer-events-none absolute left-1/2 top-16 z-10 flex w-max max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-4 rounded-2xl border-2 border-cyan bg-surface/90 px-5 py-3 shadow-lg backdrop-blur-sm">
+          <span className="flex items-center gap-2 font-mono text-xs font-bold uppercase tracking-[0.14em] text-cyan-dark">
+            <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-cyan" />
+            Test drive
+          </span>
+          <span className="flex items-center gap-1" aria-label={`Step ${step} of 3`}>
+            {[1, 2, 3].map((n) => (
+              <span
+                key={n}
+                className={
+                  "h-1.5 w-5 rounded-full " + (n <= step ? "bg-cyan" : "bg-border")
+                }
+              />
+            ))}
+          </span>
+          <span className="text-sm font-semibold text-text">{banner}</span>
+          <button
+            type="button"
+            onClick={close}
+            className="pointer-events-auto rounded-full border border-border px-3 py-1 font-mono text-xs text-text-dim transition-colors hover:border-cyan hover:text-text"
+          >
+            Exit
+          </button>
+        </div>
+
       <div className="pointer-events-auto w-[22rem] max-w-[calc(100vw-2rem)] rounded-2xl border border-border bg-surface p-5 shadow-lg">
         <div className="flex items-center justify-between gap-3">
           <p className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-cyan-dark">
@@ -383,6 +436,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
           </>
         ) : null}
       </div>
+      </>
     );
   },
 );

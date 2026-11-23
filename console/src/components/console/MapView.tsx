@@ -8,6 +8,7 @@ import {
   type BridgeEdge,
   type BridgeNode,
   type BridgeSelection,
+  type BridgeVehicle,
   type MapCapabilities,
   type PathGeometry,
 } from "@/lib/mapbridge";
@@ -38,6 +39,11 @@ type MapViewProps = {
   onNodeMoved: (nodeId: number, position: { lat: number; lng: number }) => void;
   /** A spot right-clicked on the basemap, to place a new checkpoint at. */
   onPlace: (position: { lat: number; lng: number }) => void;
+  /**
+   * Filled with a function that puts a test car on the map, while the frame
+   * can take one. A ref rather than a prop because the car moves every frame.
+   */
+  vehicleSinkRef?: React.RefObject<((vehicle: BridgeVehicle) => void) | null>;
 };
 
 /** What a node looks like on the wire, and what changing it means. */
@@ -80,6 +86,7 @@ export default function MapView({
   onSelect,
   onNodeMoved,
   onPlace,
+  vehicleSinkRef,
 }: MapViewProps) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
@@ -169,6 +176,17 @@ export default function MapView({
     },
     [origin],
   );
+
+  /* The test car's channel exists only while the frame can draw one. */
+  useEffect(() => {
+    if (!vehicleSinkRef) return;
+    vehicleSinkRef.current = ready
+      ? (vehicle) => send({ type: "sc:vehicle", payload: vehicle })
+      : null;
+    return () => {
+      vehicleSinkRef.current = null;
+    };
+  }, [ready, send, vehicleSinkRef]);
 
   /* ---------------------------------------------------------------------
      Listening

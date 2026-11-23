@@ -81,7 +81,19 @@ export type ToMapMessage =
         edges: Record<number, EdgeFlag[]>;
       };
     }
-  | { type: "sc:selection"; payload: BridgeSelection };
+  | { type: "sc:selection"; payload: BridgeSelection }
+  | { type: "sc:vehicle"; payload: BridgeVehicle };
+
+/**
+ * A demo project's test car, or `position: null` to take it off the map. Sent
+ * every frame while it drives; a map that does not know the message ignores
+ * it, which costs a demo its car and nothing else.
+ */
+export type BridgeVehicle = {
+  position: { lat: number; lng: number } | null;
+  label: string;
+  violation: boolean;
+};
 
 /** Posts one message to the frame, always at the approved origin. */
 export function postToMap(

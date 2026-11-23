@@ -37,6 +37,7 @@ export default function NewProjectDialog({
 }: NewProjectDialogProps) {
   const router = useRouter();
   const [name, setName] = useState("");
+  const [demo, setDemo] = useState(false);
   const [created, setCreated] = useState<Created | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,6 +50,7 @@ export default function NewProjectDialog({
     setWasOpen(open);
     if (open) {
       setName("");
+      setDemo(false);
       setCreated(null);
       setError(null);
       setBusy(false);
@@ -62,7 +64,7 @@ export default function NewProjectDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await createProject(projectName);
+      const result = await createProject(projectName, demo);
       setCreated({
         projectId: result.project_id,
         apiKey: result.api_key,
@@ -164,6 +166,22 @@ export default function NewProjectDialog({
           if (event.key === "Enter") void submit();
         }}
       />
+      <label className="mt-4 flex items-start gap-3 text-sm text-text">
+        <input
+          type="checkbox"
+          checked={demo}
+          onChange={(event) => setDemo(event.target.checked)}
+          className="mt-1 accent-[var(--color-cyan)]"
+        />
+        <span>
+          Demo project
+          <span className="block text-xs text-text-dim">
+            Adds a test drive: pick two checkpoints and a speed, and a car
+            drives the road between them, reported to the server like a
+            camera&apos;s sightings. Can be changed later under Project.
+          </span>
+        </span>
+      </label>
     </Modal>
   );
 }

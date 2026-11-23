@@ -1226,10 +1226,53 @@ async function moveNodeForProject(projectId, nodeId, input) {
 
 app.post("/create-project", async (req, res) => {
   const projectName = req.body["project-name"];
+  const isDemo = req.body["demo"] === true;
   const APIKey = createAPIKey();
-  const projectId = await statements.createProject(projectName, APIKey, db);
-  res.send({ project_id: projectId, api_key: APIKey });
+  const projectId = await statements.createProject(
+    projectName,
+    APIKey,
+    db,
+    isDemo,
+  );
+  res.send({ project_id: projectId, api_key: APIKey, is_demo: isDemo });
 });
+
+/**
+ * Whether this is a demo project. A demo project's console can drive a test
+ * car between checkpoints; the sightings it produces arrive at
+ * `/report-checkpoint` like any camera's, and are judged the same way.
+ */
+app.get(
+  "/project/:id/demo",
+  authenticateAPIKey(db),
+  requireOwnProject,
+  async (req, res) => {
+    try {
+      const isDemo = await statements.getProjectDemo(req.projectId, db);
+      res.json({ is_demo: isDemo });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to read the demo flag" });
+    }
+  },
+);
+
+app.put(
+  "/project/:id/demo",
+  authenticateAPIKey(db),
+  requireOwnProject,
+  async (req, res) => {
+    const enabled = req.body?.["enabled"];
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "`enabled` must be true or false" });
+    }
+    try {
+      const isDemo = await statements.setProjectDemo(req.projectId, enabled, db);
+      res.json({ is_demo: isDemo });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to change the demo flag" });
+    }
+  },
+);
 
 app.post("/authenticate", async (req, res) => {
   const apiKey = req.body["api-key"];

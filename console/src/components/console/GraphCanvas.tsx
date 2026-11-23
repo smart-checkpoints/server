@@ -76,6 +76,20 @@ export type GraphCanvasHandle = {
    * putting the preview away.
    */
   clearMove: () => void;
+  /**
+   * Places a demo project's test car, or removes it with null. Imperative
+   * because it moves every frame, and a prop would re-render the page to do it.
+   */
+  setVehicle: (vehicle: CanvasVehicle | null) => void;
+};
+
+/** A test car on the straight line of one edge, `t` of the way along it. */
+export type CanvasVehicle = {
+  fromNodeId: number;
+  toNodeId: number;
+  t: number;
+  label: string;
+  violation: boolean;
 };
 
 type HoverInfo = {
@@ -113,6 +127,8 @@ type GraphCanvasProps = {
   onDraftEdge: (draft: EdgeDraft) => void;
   /** A checkpoint was dragged to a new position and wants confirming. */
   onDraftMove: (draft: MoveDraft) => void;
+  /** A checkpoint clicked without dragging. */
+  onClickNode?: (node: CheckpointNode) => void;
 };
 
 /** How fast a congestion colour moves toward its new value, per frame. */
@@ -145,6 +161,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onSelectConnection,
       onDraftEdge,
       onDraftMove,
+      onClickNode,
     },
     ref,
   ) {
@@ -317,6 +334,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       paintNow();
     }, [paintNow]);
 
+    const vehicle = useRef<CanvasVehicle | null>(null);
+
     useImperativeHandle(
       ref,
       () => ({
@@ -324,8 +343,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         zoomBy: (factor: number) =>
           zoomAt(factor, size.current.width / 2, size.current.height / 2),
         clearMove,
+        setVehicle: (next: CanvasVehicle | null) => {
+          vehicle.current = next;
+          paintNow();
+        },
       }),
-      [fit, zoomAt, clearMove],
+      [fit, zoomAt, clearMove, paintNow],
     );
 
     /* ---------------------------------------------------------------------
@@ -699,6 +722,36 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           }
         }
 
+        /* A demo project's test car, above everything it drives past. */
+        const car = vehicle.current;
+        const carFrom = car ? positions.get(car.fromNodeId) : undefined;
+        const carTo = car ? positions.get(car.toNodeId) : undefined;
+        if (car && carFrom && carTo) {
+          const cx = carFrom.x + (carTo.x - carFrom.x) * car.t;
+          const cy = carFrom.y + (carTo.y - carFrom.y) * car.t;
+          const colour = car.violation ? tokens.red : tokens.text;
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, 13 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = withAlpha(colour, 0.18);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, 7 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = colour;
+          ctx.fill();
+          ctx.lineWidth = 2.5 / zoom;
+          ctx.strokeStyle = tokens.surface;
+          ctx.stroke();
+
+          ctx.font = `600 ${11 / zoom}px ${monoFamily()}`;
+          ctx.lineWidth = 3 / zoom;
+          ctx.strokeStyle = tokens.bg;
+          ctx.strokeText(car.label, cx, cy - 20 / zoom);
+          ctx.fillStyle = colour;
+          ctx.fillText(car.label, cx, cy - 20 / zoom);
+        }
+
         ctx.restore();
 
         drawScaleBar(ctx, tokens, view.current, size.current);
@@ -749,6 +802,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       state.pointerX = x;
       state.pointerY = y;
+      state.originX = x;
+      state.originY = y;
       state.moved = false;
 
       // Middle button always pans, whatever is under it.
@@ -795,7 +850,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       }
 
       if (state.mode === "linking") {
-        state.moved = true;
+        // A few pixels of jitter is still a click on the checkpoint.
+        if (Math.hypot(x - state.originX, y - state.originY) > 4) {
+          state.moved = true;
+        }
         paintNow();
         return;
       }
@@ -903,6 +961,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         const target = nodeAt(world.x, world.y);
         if (target && target.node_id !== state.linkFrom.node_id) {
           onDraftEdge({ from: state.linkFrom, to: target });
+        } else if (target && !state.moved) {
+          // Pressed and released on the same checkpoint: a click, not a link.
+          onClickNode?.(target);
         }
         state.linkFrom = null;
         state.mode = "idle";

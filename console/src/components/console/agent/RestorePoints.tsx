@@ -30,6 +30,8 @@ function outcome(result: RestoreResult): string {
   const parts: string[] = [];
   const n = (count: number | undefined, word: string) => (count ? `${count} ${word}${count === 1 ? "" : "s"}` : "");
   if (result.deleted_cameras?.length) parts.push(`removed ${n(result.deleted_cameras.length, "camera")}`);
+  if (result.brought_back_cameras?.length) parts.push(`brought back ${n(result.brought_back_cameras.length, "camera")}`);
+  if (result.brought_back_edges) parts.push(`brought back ${n(result.brought_back_edges, "edge")}`);
   if (result.moved) parts.push(`moved ${n(result.moved, "camera")} back`);
   if (result.created_cameras?.length) {
     parts.push(`brought back ${result.created_cameras.map((c) => `camera ${c.was} as ${c.now}`).join(", ")}`);
@@ -38,7 +40,7 @@ function outcome(result: RestoreResult): string {
   if (result.created_edges) parts.push(`re-created ${n(result.created_edges, "edge")}`);
   if (result.limits) parts.push(`put back ${n(result.limits, "limit")}`);
   let text = parts.length ? `Restored: ${parts.join(", ")}.` : "Restored.";
-  if (result.kept?.edges.length) text += ` Kept ${n(result.kept.edges.length, "edge")} with violations linked.`;
+  if (result.deleted_cameras?.length || result.deleted_edges) text += " Anything with violations was retired; the violations stay on record.";
   if (result.failed?.length) text += ` Did not work: ${result.failed.join("; ")}.`;
   return text;
 }

@@ -322,6 +322,17 @@ function migrateCameraCounter(db) {
   );
 }
 
+/**
+ * Retired checkpoints and edges: taken out of the network (no reads, no
+ * enforcement) without deleting them, because violations are linked to them
+ * and violations are records. NULL means in service.
+ */
+function migrateRetired(db) {
+  return addMissingColumns(db, "nodes", [["retired_at", "TEXT"]]).then(() =>
+    addMissingColumns(db, "connections", [["retired_at", "TEXT"]]),
+  );
+}
+
 function initializeDatabase(db) {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
@@ -338,6 +349,7 @@ function initializeDatabase(db) {
           .then(() => migrateViolationConnection(db))
           .then(() => migrateDemoFlag(db))
           .then(() => migrateCameraCounter(db))
+          .then(() => migrateRetired(db))
           .then(() => resolve(), reject);
       });
     });
@@ -810,7 +822,7 @@ const statements = {
   getConnectionByNodes: (fromNodeId, toNodeId, db) => {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT * FROM connections WHERE from_node_id = ? AND to_node_id = ?",
+        "SELECT * FROM connections WHERE from_node_id = ? AND to_node_id = ? AND retired_at IS NULL",
         [fromNodeId, toNodeId],
         (err, row) => {
           if (err) {
@@ -859,7 +871,7 @@ const statements = {
   getProjectNodes: (projectId, db) => {
     return new Promise((resolve, reject) => {
       db.all(
-        "SELECT node_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ?",
+        "SELECT node_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ? AND retired_at IS NULL",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -874,7 +886,7 @@ const statements = {
       db.all(
         "SELECT connection_id, from_node_id, to_node_id, distance, " +
           "speed_limit, distance_status, distance_updated_at " +
-          "FROM connections WHERE project_id = ?",
+          "FROM connections WHERE project_id = ? AND retired_at IS NULL",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -896,7 +908,7 @@ const statements = {
       db.all(
         "SELECT connection_id, from_node_id, to_node_id, speed_limit, " +
           "distance_status, endpoints_hash, path IS NOT NULL AS has_path " +
-          "FROM connections WHERE project_id = ?",
+          "FROM connections WHERE project_id = ? AND retired_at IS NULL",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -919,7 +931,7 @@ const statements = {
       db.all(
         "SELECT connection_id, from_node_id, to_node_id, distance, " +
           "distance_status, endpoint_offsets " +
-          "FROM connections WHERE project_id = ?",
+          "FROM connections WHERE project_id = ? AND retired_at IS NULL",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -942,7 +954,7 @@ const statements = {
     return new Promise((resolve, reject) => {
       db.all(
         "SELECT connection_id, path, path_format FROM connections " +
-          "WHERE project_id = ? AND path IS NOT NULL",
+          "WHERE project_id = ? AND path IS NOT NULL AND retired_at IS NULL",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -1064,7 +1076,7 @@ const statements = {
       db.get(
         "SELECT connection_id, project_id, from_node_id, to_node_id, " +
           "distance, speed_limit, distance_status, distance_updated_at " +
-          "FROM connections WHERE connection_id = ?",
+          "FROM connections WHERE connection_id = ? AND retired_at IS NULL",
         [connectionId],
         (err, row) => {
           if (err) reject(err);
@@ -1176,7 +1188,7 @@ const statements = {
   getNodeByIdInProject: (projectId, idInProject, db) => {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT node_id, project_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ? AND id_in_project = ?",
+        "SELECT node_id, project_id, id_in_project, latitude, longitude FROM nodes WHERE project_id = ? AND id_in_project = ? AND retired_at IS NULL",
         [projectId, idInProject],
         (err, row) => {
           if (err) reject(err);
@@ -1189,7 +1201,7 @@ const statements = {
   getNodeByNodeId: (nodeId, db) => {
     return new Promise((resolve, reject) => {
       db.get(
-        "SELECT node_id, project_id, id_in_project, latitude, longitude FROM nodes WHERE node_id = ?",
+        "SELECT node_id, project_id, id_in_project, latitude, longitude, retired_at FROM nodes WHERE node_id = ?",
         [nodeId],
         (err, row) => {
           if (err) reject(err);
@@ -1230,7 +1242,7 @@ const statements = {
       db.all(
         "SELECT connection_id, from_node_id, to_node_id, speed_limit " +
           "FROM connections " +
-          "WHERE project_id = ? AND (from_node_id = ? OR to_node_id = ?)",
+          "WHERE project_id = ? AND (from_node_id = ? OR to_node_id = ?) AND retired_at IS NULL",
         [projectId, nodeId, nodeId],
         (err, rows) => {
           if (err) reject(err);
@@ -1309,14 +1321,14 @@ const statements = {
       try {
         const nodes = await new Promise((res, rej) => {
           db.all(
-            "SELECT id_in_project, latitude, longitude FROM nodes WHERE project_id = ?",
+            "SELECT id_in_project, latitude, longitude FROM nodes WHERE project_id = ? AND retired_at IS NULL",
             [projectId],
             (err, rows) => (err ? rej(err) : res(rows || [])),
           );
         });
         const connections = await new Promise((res, rej) => {
           db.all(
-            "SELECT from_node_id, to_node_id FROM connections WHERE project_id = ?",
+            "SELECT from_node_id, to_node_id FROM connections WHERE project_id = ? AND retired_at IS NULL",
             [projectId],
             (err, rows) => (err ? rej(err) : res(rows || [])),
           );
@@ -1327,7 +1339,7 @@ const statements = {
         // We need node_id -> id_in_project map for connections
         const nodeIdMap = await new Promise((res, rej) => {
           db.all(
-            "SELECT node_id, id_in_project FROM nodes WHERE project_id = ?",
+            "SELECT node_id, id_in_project FROM nodes WHERE project_id = ? AND retired_at IS NULL",
             [projectId],
             (err, rows) => {
               if (err) rej(err);
@@ -1546,6 +1558,109 @@ const statements = {
           );
           resolve(removed);
         },
+      );
+    });
+  },
+
+  /** Takes an edge out of service, keeping the row and its violations. Resolves with rows changed. */
+  retireConnection: (connectionId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE connections SET retired_at = ? WHERE connection_id = ? AND project_id = ? AND retired_at IS NULL",
+        [new Date().toISOString(), connectionId, projectId],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes === 0) return resolve(0);
+          db.run("DELETE FROM traversals WHERE connection_id = ?", [connectionId]);
+          db.run("UPDATE projects SET connection_count = MAX(connection_count - 1, 0) WHERE project_id = ?", [projectId]);
+          resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  /** Takes a checkpoint out of service. Its edges must be retired or deleted first. */
+  retireNode: (nodeId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE nodes SET retired_at = ? WHERE node_id = ? AND project_id = ? AND retired_at IS NULL " +
+          "AND NOT EXISTS (SELECT 1 FROM connections WHERE (from_node_id = ? OR to_node_id = ?) AND retired_at IS NULL)",
+        [new Date().toISOString(), nodeId, projectId, nodeId, nodeId],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes === 0) return resolve(0);
+          db.run("UPDATE car_data SET last_sighting_node_id = NULL WHERE last_sighting_node_id = ?", [nodeId]);
+          db.run("UPDATE projects SET node_count = MAX(node_count - 1, 0) WHERE project_id = ?", [projectId]);
+          resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  unretireNode: (nodeId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE nodes SET retired_at = NULL WHERE node_id = ? AND project_id = ? AND retired_at IS NOT NULL",
+        [nodeId, projectId],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes === 0) return resolve(0);
+          db.run("UPDATE projects SET node_count = node_count + 1 WHERE project_id = ?", [projectId]);
+          resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  /** Back into service, if both of its checkpoints are in service and the pair has no other live edge. */
+  unretireConnection: (connectionId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE connections SET retired_at = NULL WHERE connection_id = ? AND project_id = ? AND retired_at IS NOT NULL " +
+          "AND (SELECT retired_at FROM nodes WHERE node_id = connections.from_node_id) IS NULL " +
+          "AND (SELECT retired_at FROM nodes WHERE node_id = connections.to_node_id) IS NULL " +
+          "AND NOT EXISTS (SELECT 1 FROM connections c2 WHERE c2.from_node_id = connections.from_node_id " +
+          "AND c2.to_node_id = connections.to_node_id AND c2.retired_at IS NULL)",
+        [connectionId, projectId],
+        function (err) {
+          if (err) return reject(err);
+          if (this.changes === 0) return resolve(0);
+          db.run("UPDATE projects SET connection_count = connection_count + 1 WHERE project_id = ?", [projectId]);
+          resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  /** Retired checkpoints and edges, newest first, with how many violations each edge holds. */
+  listRetired: (projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        "SELECT node_id, id_in_project, latitude, longitude, retired_at FROM nodes " +
+          "WHERE project_id = ? AND retired_at IS NOT NULL ORDER BY retired_at DESC",
+        [projectId],
+        (err, nodes) => {
+          if (err) return reject(err);
+          db.all(
+            "SELECT c.connection_id, c.from_node_id, c.to_node_id, c.distance, c.speed_limit, c.distance_status, c.retired_at, " +
+              "(SELECT COUNT(*) FROM violations v WHERE v.connection_id = c.connection_id) AS violations " +
+              "FROM connections c WHERE c.project_id = ? AND c.retired_at IS NOT NULL ORDER BY c.retired_at DESC",
+            [projectId],
+            (err2, connections) => (err2 ? reject(err2) : resolve({ nodes: nodes || [], connections: connections || [] })),
+          );
+        },
+      );
+    });
+  },
+
+  /** One edge, retired or not, for bringing it back. */
+  getAnyConnection: (connectionId, db) => {
+    return new Promise((resolve, reject) => {
+      db.get(
+        "SELECT connection_id, project_id, from_node_id, to_node_id, distance, speed_limit, distance_status, retired_at " +
+          "FROM connections WHERE connection_id = ?",
+        [connectionId],
+        (err, row) => (err ? reject(err) : resolve(row || null)),
       );
     });
   },

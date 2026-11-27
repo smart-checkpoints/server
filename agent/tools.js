@@ -6,10 +6,11 @@
  * Each one maps onto ALLOWED endpoints of the REST API and nothing else.
  * What the agent must never do - create, edit or delete violations or
  * evidence, touch API keys, auth, projects or the map driver - has no tool
- * here at all, so no prompt can talk it into doing so. Deletes exist only for
- * edges and checkpoints with no violations linked, always behind an operator
- * confirmation, and no tool accepts a road distance: distances are measured
- * by the distance driver, never stated by the agent.
+ * here at all, so no prompt can talk it into doing so. Removing a checkpoint
+ * or edge deletes it if it never had a violation and retires it otherwise
+ * (the server decides, so violations always keep what they point at), always
+ * behind an operator confirmation. No tool accepts a road distance: distances
+ * are measured by the distance driver, never stated by the agent.
  *
  * A tool has three parts:
  *   validate(input)      -> { value } or { error }; inputs are re-checked here
@@ -303,6 +304,7 @@ const TOOLS = [
 
   {
     name: "points_between",
+    loose: true,
     description:
       "Get evenly spaced points on the road between two existing checkpoints, for adding cameras in between. Place each one with split_edge on the edge that connects them, never with create_checkpoint.",
     input_schema: strict({
@@ -508,7 +510,7 @@ const TOOLS = [
   {
     name: "split_edge",
     description:
-      "Add a camera ON an existing edge A -> B: creates checkpoint N there, connects A -> N and N -> B at the same speed limit, and deletes A -> B. If B -> A exists too, it is split the same way. Get the position from points_between. The operator always confirms. Refused if the edge has violations linked to it: those are legal records tied to that edge.",
+      "Add a camera ON an existing edge A -> B: creates checkpoint N there, connects A -> N and N -> B at the same speed limit, and removes A -> B (retired, not deleted, if violations are linked to it, so they stay on record). If B -> A exists too, it is split the same way. Get the position from points_between. The operator always confirms.",
     input_schema: strict({
       connection_id: { type: "integer" },
       latitude: { type: "number" },
@@ -537,12 +539,6 @@ const TOOLS = [
       const reverse = edges.find((e) => e.from_node_id === edge.to_node_id && e.to_node_id === edge.from_node_id);
       const split = reverse ? [edge, reverse] : [edge];
       const linked = violations.filter((v) => split.some((e) => e.connection_id === v.connection_id)).length;
-      if (linked > 0) {
-        throw new ToolError(
-          `The edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)} has ${linked} recorded violation(s) linked to it. ` +
-            "Violations are legal records tied to that edge, so it cannot be split or deleted.",
-        );
-      }
       const pair = (e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`;
       return {
         target: { kind: "point", latitude: value.latitude, longitude: value.longitude },
@@ -550,7 +546,10 @@ const TOOLS = [
           summary: `Add a camera between camera ${cam(edge.from_node_id)} and camera ${cam(edge.to_node_id)}?`,
           details: [
             `Replaces ${split.map(pair).join(" and ")} with two edges through the new camera, at ${edge.speed_limit} km/h.`,
-            "No violations are linked to the edge being replaced. The new edges enforce once the distance driver measures them.",
+            linked > 0
+              ? `The old section is retired, not deleted: its ${linked} violation${linked === 1 ? "" : "s"} stay on record.`
+              : "No violations are linked to the section being replaced.",
+            "The new sections enforce once the distance driver measures them.",
           ],
         },
         plan: {
@@ -575,11 +574,11 @@ const TOOLS = [
   {
     name: "delete_edges",
     description:
-      "Delete one or more edges, in ONE call with all their connection_ids: the operator approves them together on one card. Edges with violations linked are kept (violations are legal records tied to that edge) and listed on the card; if every edge asked for has violations, nothing is deleted.",
+      "Remove one or more edges, in ONE call with all their connection_ids: the operator approves them together on one card. An edge that never had a violation is deleted; one with violations is retired instead (taken out of the network and no longer enforcing, while its violations stay on record), automatically. Never refuse a removal because of violations.",
     input_schema: strict({ connection_ids: { type: "array", items: { type: "integer" } } }),
     validate: (input) =>
       Array.isArray(input.connection_ids) && input.connection_ids.length > 0 && input.connection_ids.every(isInt)
-        ? { value: { connection_ids: [...new Set(input.connection_ids)].slice(0, 200) } }
+        ? { value: { connection_ids: [...new Set(input.connection_ids)].slice(0, 500) } }
         : { error: "connection_ids must be a non-empty array of integers" },
     prepare: async (value, ctx) => {
       const [nodes, edges, violations] = await Promise.all([
@@ -588,58 +587,55 @@ const TOOLS = [
         ctx.api.getViolations(),
       ]);
       const cam = cameraOf(nodes);
-      const missing = value.connection_ids.filter((id) => !edges.some((e) => e.connection_id === id));
-      if (missing.length === value.connection_ids.length) {
-        throw new ToolError(`There is no edge with connection_id ${missing.join(", ")}.`);
-      }
-      const pair = (e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`;
       const asked = edges.filter((e) => value.connection_ids.includes(e.connection_id));
+      if (asked.length === 0) throw new ToolError(`There is no edge with connection_id ${value.connection_ids.join(", ")} in service.`);
       const linked = (e) => violations.filter((v) => v.connection_id === e.connection_id).length;
-      const kept = asked.filter((e) => linked(e) > 0);
-      const doomed = asked.filter((e) => linked(e) === 0);
-      if (doomed.length === 0) {
-        throw new ToolError(
-          `Every edge asked for has recorded violations linked to it (${kept.map((e) => `${pair(e)}: ${linked(e)}`).join(", ")}). Violations are legal records, so none can be deleted.`,
-        );
-      }
-      const n = doomed.length;
+      const records = asked.reduce((sum, e) => sum + linked(e), 0);
+      const n = asked.length;
+      const pair = (e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`;
       return {
-        target: { kind: "edge", connection_id: doomed[0].connection_id },
+        target: { kind: "edge", connection_id: asked[0].connection_id },
         confirm: {
-          summary: n === 1 ? `Delete the edge from camera ${cam(doomed[0].from_node_id)} to camera ${cam(doomed[0].to_node_id)}?` : `Delete ${n} edges?`,
+          summary: n === 1 ? `The section ${pair(asked[0])} will be removed.` : `${n} sections will be removed.`,
           details: [
-            `${n === 1 ? "Edge" : "Edges"} removed: ${doomed.map(pair).join(", ")}. Cars on ${n === 1 ? "it" : "them"} will no longer be checked.`,
-            ...(kept.length
-              ? [`Kept, because violations are linked to them: ${kept.map((e) => `${pair(e)} (${linked(e)})`).join(", ")}.`]
-              : []),
+            ...(n > 1 && n <= 12 ? [`Sections: ${asked.map(pair).join(", ")}.`] : []),
+            records > 0
+              ? `${records} violation${records === 1 ? "" : "s"} stay on record.`
+              : "No violations are linked to them.",
           ],
         },
-        plan: { connection_ids: doomed.map((e) => e.connection_id), kept: kept.map((e) => ({ connection_id: e.connection_id, violations: linked(e) })) },
+        plan: { connection_ids: asked.map((e) => e.connection_id) },
       };
     },
     run: async (plan, ctx) => {
       const deleted = [];
+      const retired = [];
       const failed = [];
       for (const id of plan.connection_ids) {
         try {
-          await ctx.api.deleteConnection(id);
-          deleted.push(id);
+          const result = await ctx.api.deleteConnection(id);
+          (result.outcome === "retired" ? retired : deleted).push(id);
         } catch (err) {
           failed.push({ connection_id: id, error: err.message });
         }
       }
-      return { deleted_connection_ids: deleted, kept_with_violations: plan.kept, ...(failed.length ? { failed } : {}) };
+      return {
+        deleted_connection_ids: deleted,
+        retired_connection_ids: retired,
+        ...(retired.length ? { note: "Retired sections had violations; they stay on record and can be brought back with bring_back." } : {}),
+        ...(failed.length ? { failed } : {}),
+      };
     },
   },
 
   {
     name: "delete_checkpoints",
     description:
-      "Delete one or more checkpoints and every edge touching them, in ONE call with all their node_ids (for 'delete all cameras', every node_id): the operator approves them together on one card. A checkpoint with an edge that has violations linked is kept and listed on the card; if every one asked for has, nothing is deleted. Camera numbers are never reused.",
+      "Remove one or more checkpoints and every edge touching them, in ONE call with all their node_ids (for 'clear all', every node_id): the operator approves them together on one card. Anything that never had a violation is deleted; anything with violations is retired instead (out of the network, no longer enforcing, violations kept on record), automatically. Never refuse a removal because of violations. Camera numbers are never reused.",
     input_schema: strict({ node_ids: { type: "array", items: { type: "integer" } } }),
     validate: (input) =>
       Array.isArray(input.node_ids) && input.node_ids.length > 0 && input.node_ids.every(isInt)
-        ? { value: { node_ids: [...new Set(input.node_ids)].slice(0, 200) } }
+        ? { value: { node_ids: [...new Set(input.node_ids)].slice(0, 500) } }
         : { error: "node_ids must be a non-empty array of integers" },
     prepare: async (value, ctx) => {
       const [nodes, edges, violations] = await Promise.all([
@@ -648,59 +644,136 @@ const TOOLS = [
         ctx.api.getViolations(),
       ]);
       const asked = nodes.filter((n) => value.node_ids.includes(n.node_id));
-      if (asked.length === 0) throw new ToolError(`There is no checkpoint with node_id ${value.node_ids.join(", ")}.`);
-      const cam = cameraOf(nodes);
-      const touching = (node) => edges.filter((e) => e.from_node_id === node.node_id || e.to_node_id === node.node_id);
-      const linked = (node) => violations.filter((v) => touching(node).some((e) => e.connection_id === v.connection_id)).length;
-      const kept = asked.filter((n) => linked(n) > 0);
-      const doomed = asked.filter((n) => linked(n) === 0);
-      if (doomed.length === 0) {
-        throw new ToolError(
-          `Every camera asked for has edges with recorded violations linked to them (${kept.map((n) => `camera ${n.id_in_project}: ${linked(n)}`).join(", ")}). Violations are legal records, so none can be deleted.`,
-        );
-      }
-      const doomedEdges = edges.filter((e) => doomed.some((n) => n.node_id === e.from_node_id || n.node_id === e.to_node_id));
-      const n = doomed.length;
-      const e = doomedEdges.length;
-      const cameras = doomed.map((c) => c.id_in_project).join(", ");
+      if (asked.length === 0) throw new ToolError(`There is no checkpoint with node_id ${value.node_ids.join(", ")} in service.`);
+      const ids = new Set(asked.map((n) => n.node_id));
+      const goingEdges = edges.filter((e) => ids.has(e.from_node_id) || ids.has(e.to_node_id));
+      const goingIds = new Set(goingEdges.map((e) => e.connection_id));
+      const records = violations.filter((v) => goingIds.has(v.connection_id)).length;
+      const n = asked.length;
+      const e = goingEdges.length;
+      const everything = n === nodes.length;
+      const cameras = n === 1 ? `Camera ${asked[0].id_in_project}` : `${n} cameras`;
+      const sections = e ? ` and ${e} section${e === 1 ? "" : "s"}` : "";
       return {
-        target: { kind: "node", node_id: doomed[0].node_id },
+        target: { kind: "node", node_id: asked[0].node_id },
         confirm: {
-          summary:
-            n === 1
-              ? `Delete camera ${cameras}${e ? ` and its ${e} edge${e === 1 ? "" : "s"}` : ""}?`
-              : `Delete ${n} cameras${e ? ` and their ${e} edge${e === 1 ? "" : "s"}` : ""}?`,
+          summary: `${cameras}${sections} will be removed.`,
           details: [
-            `Camera${n === 1 ? "" : "s"} ${cameras}.${e ? ` Edges removed: ${doomedEdges.map((x) => `${cam(x.from_node_id)} → ${cam(x.to_node_id)}`).join(", ")}.` : ""}`,
-            ...(kept.length
-              ? [`Kept, because violations are linked to their edges: ${kept.map((c) => `camera ${c.id_in_project} (${linked(c)})`).join(", ")}.`]
-              : []),
-            "Deleted camera numbers will not be given to any new checkpoint.",
+            ...(everything ? ["That is the whole network."] : n > 1 && n <= 15 ? [`Cameras: ${asked.map((c) => c.id_in_project).join(", ")}.`] : []),
+            records > 0 ? `${records} violation${records === 1 ? "" : "s"} stay on record.` : "No violations are linked to them.",
           ],
         },
-        plan: {
-          node_ids: doomed.map((c) => c.node_id),
-          kept: kept.map((c) => ({ camera: c.id_in_project, violations: linked(c) })),
-        },
+        plan: { node_ids: asked.map((c) => c.node_id) },
       };
     },
     run: async (plan, ctx) => {
       const deleted = [];
+      const retired = [];
+      let edgesDeleted = 0;
+      let edgesRetired = 0;
       const failed = [];
       for (const id of plan.node_ids) {
         try {
           const result = await ctx.api.deleteNode(id);
-          deleted.push({ camera: result.id_in_project, deleted_connection_ids: result.connections_removed });
+          (result.outcome === "retired" ? retired : deleted).push(result.id_in_project);
+          edgesDeleted += (result.connections_deleted || []).length;
+          edgesRetired += (result.connections_retired || []).length;
         } catch (err) {
           failed.push({ node_id: id, error: err.message });
         }
       }
       return {
-        deleted_cameras: deleted.map((d) => d.camera),
-        deleted_connection_ids: deleted.flatMap((d) => d.deleted_connection_ids),
-        kept_with_violations: plan.kept,
+        deleted_cameras: deleted,
+        retired_cameras: retired,
+        sections_deleted: edgesDeleted,
+        sections_retired: edgesRetired,
+        ...(retired.length || edgesRetired ? { note: "Retired items had violations; they stay on record and can be brought back with bring_back." } : {}),
         ...(failed.length ? { failed } : {}),
       };
+    },
+  },
+
+  {
+    name: "list_retired",
+    loose: true,
+    description:
+      "List retired checkpoints and edges: removed from the network because violations are linked to them, kept on record, and able to be brought back.",
+    input_schema: strict({}),
+    validate: () => ({ value: {} }),
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const retired = await ctx.api.getRetired();
+      const camera = new Map(retired.nodes.map((n) => [n.node_id, n.id_in_project]));
+      const live = new Map((await ctx.api.getNodes()).map((n) => [n.node_id, n.id_in_project]));
+      const cam = (id) => camera.get(id) ?? live.get(id) ?? "?";
+      return {
+        retired_cameras: retired.nodes.map((n) => ({ node_id: n.node_id, camera: n.id_in_project, retired_at: n.retired_at })),
+        retired_sections: retired.connections.map((e) => ({
+          connection_id: e.connection_id,
+          from_camera: cam(e.from_node_id),
+          to_camera: cam(e.to_node_id),
+          speed_limit_kmh: e.speed_limit,
+          violations: e.violations,
+          retired_at: e.retired_at,
+        })),
+      };
+    },
+  },
+
+  {
+    name: "bring_back",
+    description:
+      "Put retired checkpoints and edges back in service, in ONE call: cameras first, then the sections between them, with the limits and distances they had. The operator confirms on one card. A section can only come back if both its cameras are in service. Get the ids from list_retired.",
+    input_schema: strict({
+      node_ids: { type: "array", items: { type: "integer" } },
+      connection_ids: { type: "array", items: { type: "integer" } },
+    }),
+    validate: (input) => {
+      const ints = (list) => Array.isArray(list) && list.every(isInt);
+      if (!ints(input.node_ids) || !ints(input.connection_ids)) return { error: "ids must be arrays of integers" };
+      if (input.node_ids.length + input.connection_ids.length === 0) return { error: "give at least one id" };
+      return { value: { node_ids: [...new Set(input.node_ids)], connection_ids: [...new Set(input.connection_ids)] } };
+    },
+    prepare: async (value, ctx) => {
+      const retired = await ctx.api.getRetired();
+      const nodes = retired.nodes
+        .filter((n) => value.node_ids.includes(n.node_id))
+        .sort((x, y) => x.id_in_project - y.id_in_project);
+      const edges = retired.connections.filter((e) => value.connection_ids.includes(e.connection_id));
+      if (nodes.length + edges.length === 0) throw new ToolError("None of those are retired. Use list_retired for the ids.");
+      const parts = [];
+      if (nodes.length) parts.push(`${nodes.length} camera${nodes.length === 1 ? "" : "s"}`);
+      if (edges.length) parts.push(`${edges.length} section${edges.length === 1 ? "" : "s"}`);
+      return {
+        target: nodes.length ? { kind: "point", latitude: nodes[0].latitude, longitude: nodes[0].longitude } : { kind: "ui", element: "frame" },
+        confirm: {
+          summary: `${parts.join(" and ")} will be back in service.`,
+          details: [
+            ...(nodes.length ? [`Cameras ${nodes.map((n) => n.id_in_project).join(", ")}, with their old numbers.`] : []),
+            ...(edges.length ? ["Sections come back with the limits and distances they had, and enforce again."] : []),
+          ],
+        },
+        plan: { node_ids: nodes.map((n) => n.node_id), connection_ids: edges.map((e) => e.connection_id) },
+      };
+    },
+    run: async (plan, ctx) => {
+      const back = { cameras: [], sections: [], failed: [] };
+      for (const id of plan.node_ids) {
+        try {
+          back.cameras.push((await ctx.api.unretireNode(id)).id_in_project);
+        } catch (err) {
+          back.failed.push({ node_id: id, error: err.message });
+        }
+      }
+      for (const id of plan.connection_ids) {
+        try {
+          await ctx.api.unretireConnection(id);
+          back.sections.push(id);
+        } catch (err) {
+          back.failed.push({ connection_id: id, error: err.message });
+        }
+      }
+      return back;
     },
   },
 
@@ -1091,6 +1164,7 @@ const TOOLS = [
 
   {
     name: "frame_map",
+    loose: true,
     description:
       "Move the operator's map to show these checkpoints and edges, or the whole network if both lists are empty. Display only.",
     input_schema: strict({
@@ -1251,6 +1325,7 @@ const TOOLS = [
 
   {
     name: "highlight",
+    loose: true,
     description:
       "Highlight checkpoints and edges on the operator's map, for example the results of a question. Display only: it changes nothing in the system. An empty list clears highlights.",
     input_schema: strict({

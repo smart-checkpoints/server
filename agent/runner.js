@@ -32,6 +32,7 @@ const CURSOR_TOOLS = new Set([
   "split_edge",
   "delete_edges",
   "delete_checkpoints",
+  "bring_back",
   "restore_to",
   "set_speed_limit",
   "move_checkpoint_by",
@@ -56,6 +57,7 @@ const CHANGING_TOOLS = new Set([
   "move_checkpoint_by",
   "move_checkpoint_to",
   "restore_to",
+  "bring_back",
 ]);
 
 /**

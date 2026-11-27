@@ -966,7 +966,7 @@ async function resolveEdgeEndpoints(projectId, fromNodeId, toNodeId) {
     statements.getNodeByNodeId(fromNodeId, db),
     statements.getNodeByNodeId(toNodeId, db),
   ]);
-  if (!fromNode || !toNode) return null;
+  if (!fromNode || !toNode || fromNode.retired_at || toNode.retired_at) return null;
   if (fromNode.project_id !== projectId || toNode.project_id !== projectId) {
     return null;
   }
@@ -1168,7 +1168,7 @@ async function moveNodeForProject(projectId, nodeId, input) {
   }
 
   const node = await statements.getNodeByNodeId(nodeId, db);
-  if (!node) {
+  if (!node || node.retired_at) {
     return { ok: false, status: 404, error: "Node not found" };
   }
   if (node.project_id !== projectId) {
@@ -1616,26 +1616,22 @@ app.put("/connection/:id", authenticateAPIKey(db), async (req, res) => {
   }
 });
 
-// --- Deleting edges and checkpoints ---
+// --- Removing edges and checkpoints ---
 //
-// A violation is a legal record of where and how fast a car was measured, and
-// it points at the edge it was measured on. Deleting that edge would leave
-// the record pointing at nothing an operator or a court could look at, so an
-// edge with violations linked to it cannot be deleted, and neither can a
-// checkpoint whose edges have any. The check is repeated inside the DELETE
-// statement itself, so a violation recorded mid-request still stops it.
+// A violation is a record of where and how fast a car was measured, and it
+// points at the edge it was measured on. So an edge or checkpoint that never
+// had a violation is deleted outright, and one that has is retired instead:
+// it leaves the network (no reads, no enforcement, gone from the graph and
+// the map) but its row stays, so every violation keeps pointing at it.
+// Retired items can be brought back. Either way the caller asked for it to
+// go, and it goes; nothing here refuses because of violations.
 
-const VIOLATIONS_BLOCK_DELETE =
-  "Violations are legal records, and they point at the edge they were measured on, " +
-  "so an edge with violations linked to it cannot be deleted.";
-
-/** Rejects, as a 409 body, when any of these edges has violations linked. */
-async function violationsBlocking(connectionIds) {
-  const counts = await statements.countViolationsByConnection(connectionIds, db);
-  const blocked = connectionIds
-    .filter((id) => (counts.get(id) || 0) > 0)
-    .map((id) => ({ connection_id: id, violations: counts.get(id) }));
-  return blocked.length === 0 ? null : blocked;
+/** Deletes an edge, or retires it if violations are linked. Resolves "deleted", "retired" or null. */
+async function removeConnection(connectionId, projectId) {
+  const deleted = await statements.deleteConnection(connectionId, projectId, db);
+  if (deleted > 0) return "deleted";
+  const retired = await statements.retireConnection(connectionId, projectId, db);
+  return retired > 0 ? "retired" : null;
 }
 
 app.delete("/connection/:id", authenticateAPIKey(db), async (req, res) => {
@@ -1649,78 +1645,50 @@ app.delete("/connection/:id", authenticateAPIKey(db), async (req, res) => {
     if (existing.project_id !== req.projectId) {
       return res.status(403).json({ error: "API key does not match project" });
     }
-
-    const blocked = await violationsBlocking([connectionId]);
-    if (blocked) {
-      return res.status(409).json({
-        error: `This edge has ${blocked[0].violations} recorded violation(s) linked to it. ${VIOLATIONS_BLOCK_DELETE}`,
-        blocked_by: blocked,
-      });
-    }
-    const removed = await statements.deleteConnection(connectionId, req.projectId, db);
-    if (removed === 0) {
-      return res.status(409).json({ error: `A violation was just recorded on this edge. ${VIOLATIONS_BLOCK_DELETE}` });
-    }
+    const outcome = await removeConnection(connectionId, req.projectId);
+    if (!outcome) return res.status(404).json({ error: "Connection not found" });
 
     io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: connectionId });
-    console.log(`🗑️  Edge ${connectionId} deleted in project ${req.projectId}`);
-    res.json({ success: true, connection_id: connectionId });
+    console.log(`🗑️  Edge ${connectionId} ${outcome} in project ${req.projectId}`);
+    res.json({ success: true, connection_id: connectionId, outcome });
   } catch (err) {
-    console.error("Error deleting connection:", err);
-    res.status(500).json({ error: "Failed to delete connection" });
+    console.error("Error removing connection:", err);
+    res.status(500).json({ error: "Failed to remove connection" });
   }
 });
 
 /**
- * Deletes a checkpoint and every edge touching it. All of it or none of it:
- * if any of those edges has violations linked, nothing is deleted. Its
- * camera number is never given to another checkpoint.
+ * Removes a checkpoint and every edge touching it: each edge deleted or
+ * retired as above, then the checkpoint deleted if nothing (live or retired)
+ * still points at it, and retired otherwise. Its camera number is never
+ * given to another checkpoint.
  */
 app.delete("/node/:id", authenticateAPIKey(db), async (req, res) => {
   try {
     const nodeId = parseInt(req.params.id, 10);
     if (!Number.isInteger(nodeId)) return res.status(400).json({ error: "Invalid node id" });
     const node = await statements.getNodeByNodeId(nodeId, db);
-    if (!node) return res.status(404).json({ error: "Node not found" });
+    if (!node || node.retired_at) return res.status(404).json({ error: "Node not found" });
     if (node.project_id !== req.projectId) {
       return res.status(403).json({ error: "API key does not match project" });
     }
 
     const touching = await statements.getConnectionsTouchingNode(nodeId, req.projectId, db);
-    const blocked = await violationsBlocking(touching.map((edge) => edge.connection_id));
-    if (blocked) {
-      const total = blocked.reduce((sum, edge) => sum + edge.violations, 0);
-      return res.status(409).json({
-        error:
-          `Checkpoint ${node.id_in_project} has ${blocked.length} edge(s) with ${total} recorded violation(s) linked to them. ` +
-          VIOLATIONS_BLOCK_DELETE,
-        blocked_by: blocked,
-      });
-    }
-
-    const removedEdges = [];
+    const deletedEdges = [];
+    const retiredEdges = [];
     for (const edge of touching) {
-      const removed = await statements.deleteConnection(edge.connection_id, req.projectId, db);
-      if (removed === 0) {
-        for (const id of removedEdges) {
-          io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: id });
-        }
-        return res.status(409).json({
-          error: `A violation was just recorded on edge ${edge.connection_id}; the checkpoint was not deleted. ${VIOLATIONS_BLOCK_DELETE}`,
-          connections_removed: removedEdges,
-        });
-      }
-      removedEdges.push(edge.connection_id);
+      const outcome = await removeConnection(edge.connection_id, req.projectId);
+      if (outcome === "deleted") deletedEdges.push(edge.connection_id);
+      if (outcome === "retired") retiredEdges.push(edge.connection_id);
+      if (outcome) io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: edge.connection_id });
     }
 
-    const removed = await statements.deleteNode(nodeId, req.projectId, db);
-    for (const id of removedEdges) {
-      io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: id });
-    }
-    if (removed === 0) {
+    let outcome = (await statements.deleteNode(nodeId, req.projectId, db)) > 0 ? "deleted" : null;
+    if (!outcome) outcome = (await statements.retireNode(nodeId, req.projectId, db)) > 0 ? "retired" : null;
+    if (!outcome) {
       return res.status(409).json({
-        error: "A new edge was connected to this checkpoint while it was being deleted; it was kept.",
-        connections_removed: removedEdges,
+        error: "A new edge was connected to this checkpoint while it was being removed; it was kept.",
+        connections_removed: [...deletedEdges, ...retiredEdges],
       });
     }
 
@@ -1729,17 +1697,82 @@ app.delete("/node/:id", authenticateAPIKey(db), async (req, res) => {
       id_in_project: node.id_in_project,
     });
     console.log(
-      `🗑️  Checkpoint ${node.id_in_project} deleted in project ${req.projectId} with ${removedEdges.length} edge(s)`,
+      `🗑️  Checkpoint ${node.id_in_project} ${outcome} in project ${req.projectId} (${deletedEdges.length} edge(s) deleted, ${retiredEdges.length} retired)`,
     );
     res.json({
       success: true,
       node_id: nodeId,
       id_in_project: node.id_in_project,
-      connections_removed: removedEdges,
+      outcome,
+      connections_removed: [...deletedEdges, ...retiredEdges],
+      connections_deleted: deletedEdges,
+      connections_retired: retiredEdges,
     });
   } catch (err) {
-    console.error("Error deleting node:", err);
-    res.status(500).json({ error: "Failed to delete node" });
+    console.error("Error removing node:", err);
+    res.status(500).json({ error: "Failed to remove node" });
+  }
+});
+
+// --- Retired items ---
+
+app.get("/project/:id/retired", authenticateAPIKey(db), requireOwnProject, async (req, res) => {
+  try {
+    res.json(await statements.listRetired(req.projectId, db));
+  } catch (err) {
+    console.error("Error listing retired items:", err);
+    res.status(500).json({ error: "Failed to list retired items" });
+  }
+});
+
+/** Puts a retired checkpoint back in service. Its edges stay retired until brought back too. */
+app.post("/node/:id/unretire", authenticateAPIKey(db), async (req, res) => {
+  try {
+    const nodeId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(nodeId)) return res.status(400).json({ error: "Invalid node id" });
+    const node = await statements.getNodeByNodeId(nodeId, db);
+    if (!node || node.project_id !== req.projectId) return res.status(404).json({ error: "Node not found" });
+    if (!node.retired_at) return res.status(409).json({ error: "That checkpoint is in service." });
+    await statements.unretireNode(nodeId, req.projectId, db);
+    io.to(`project-${req.projectId}`).emit("node-added", {
+      node_id: nodeId,
+      id_in_project: node.id_in_project,
+      latitude: node.latitude,
+      longitude: node.longitude,
+    });
+    res.json({ success: true, node_id: nodeId, id_in_project: node.id_in_project });
+  } catch (err) {
+    console.error("Error bringing a node back:", err);
+    res.status(500).json({ error: "Failed to bring the checkpoint back" });
+  }
+});
+
+/** Puts a retired edge back in service, with the distance and limit it had. */
+app.post("/connection/:id/unretire", authenticateAPIKey(db), async (req, res) => {
+  try {
+    const connectionId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(connectionId)) return res.status(400).json({ error: "Invalid connection id" });
+    const edge = await statements.getAnyConnection(connectionId, db);
+    if (!edge || edge.project_id !== req.projectId) return res.status(404).json({ error: "Connection not found" });
+    if (!edge.retired_at) return res.status(409).json({ error: "That edge is in service." });
+    const changed = await statements.unretireConnection(connectionId, req.projectId, db);
+    if (!changed) {
+      return res.status(409).json({
+        error: "Both of its checkpoints must be in service, and they must not already be connected the same way.",
+      });
+    }
+    io.to(`project-${req.projectId}`).emit("connection-added", {
+      connection_id: connectionId,
+      from_node_id: edge.from_node_id,
+      to_node_id: edge.to_node_id,
+      distance: edge.distance_status === "ok" ? edge.distance : null,
+      speed_limit: edge.speed_limit,
+      distance_status: edge.distance_status,
+    });
+    res.json({ success: true, connection_id: connectionId });
+  } catch (err) {
+    console.error("Error bringing an edge back:", err);
+    res.status(500).json({ error: "Failed to bring the edge back" });
   }
 });
 

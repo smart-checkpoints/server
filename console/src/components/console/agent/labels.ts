@@ -57,16 +57,18 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
       break;
     case "delete_edges": {
       const n = Array.isArray(input.connection_ids) ? input.connection_ids.length : 0;
-      const done = Array.isArray(result.deleted_connection_ids) ? result.deleted_connection_ids.length : 0;
-      title = n === 1 ? "Deleting an edge" : `Deleting ${n} edges`;
-      outcome = done === 1 ? "Deleted 1 edge" : `Deleted ${done} edges`;
+      const count = (key: string) => (Array.isArray(result[key]) ? (result[key] as unknown[]).length : 0);
+      const done = count("deleted_connection_ids") + count("retired_connection_ids");
+      title = n === 1 ? "Removing a section" : `Removing ${n} sections`;
+      outcome = `Removed ${done} section${done === 1 ? "" : "s"}`;
       break;
     }
     case "delete_checkpoints": {
       const n = Array.isArray(input.node_ids) ? input.node_ids.length : 0;
-      const done = Array.isArray(result.deleted_cameras) ? (result.deleted_cameras as number[]) : [];
-      title = n === 1 ? `Deleting camera ${camera(cameraOf, (input.node_ids as unknown[])[0])}` : `Deleting ${n} cameras`;
-      outcome = done.length === 1 ? `Deleted camera ${done[0]}` : `Deleted ${done.length} cameras`;
+      const list = (key: string) => (Array.isArray(result[key]) ? (result[key] as number[]) : []);
+      const done = [...list("deleted_cameras"), ...list("retired_cameras")];
+      title = n === 1 ? `Removing camera ${camera(cameraOf, (input.node_ids as unknown[])[0])}` : `Removing ${n} cameras`;
+      outcome = done.length === 1 ? `Removed camera ${done[0]}` : `Removed ${done.length} cameras`;
       break;
     }
     case "import_checkpoints": {
@@ -74,6 +76,17 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
       const made = Array.isArray(result.created) ? result.created.length : 0;
       title = `Placing ${n} cameras${typeof input.source === "string" && input.source ? ` from ${input.source}` : ""}`;
       outcome = `Placed ${made} camera${made === 1 ? "" : "s"}`;
+      break;
+    }
+    case "list_retired":
+      title = "Reading retired cameras and sections";
+      outcome = "Read retired cameras and sections";
+      break;
+    case "bring_back": {
+      const cams = Array.isArray(result.cameras) ? result.cameras.length : 0;
+      const secs = Array.isArray(result.sections) ? result.sections.length : 0;
+      title = "Bringing back retired items";
+      outcome = `Brought back ${cams} camera${cams === 1 ? "" : "s"} and ${secs} section${secs === 1 ? "" : "s"}`;
       break;
     }
     case "list_restore_points":

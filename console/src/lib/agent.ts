@@ -160,6 +160,8 @@ export type RestorePreview = { restore_point_id: number; name: string; empty: bo
 export type RestoreResult = {
   restored: boolean;
   created_cameras?: { was: number; now: number }[];
+  brought_back_cameras?: number[];
+  brought_back_edges?: number;
   deleted_cameras?: number[];
   moved?: number;
   deleted_edges?: number;

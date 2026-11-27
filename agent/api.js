@@ -72,6 +72,9 @@ function createApiClient(baseUrl, apiKey, projectId, record) {
     moveNode: (nodeId, latitude, longitude) => call("PUT", `/node/${nodeId}`, { latitude, longitude }),
     deleteConnection: (connectionId) => call("DELETE", `/connection/${connectionId}`),
     deleteNode: (nodeId) => call("DELETE", `/node/${nodeId}`),
+    getRetired: () => call("GET", `${p}/retired`),
+    unretireNode: (nodeId) => call("POST", `/node/${nodeId}/unretire`),
+    unretireConnection: (connectionId) => call("POST", `/connection/${connectionId}/unretire`),
   };
 }
 

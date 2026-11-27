@@ -65,6 +65,11 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
       thinking: config.thinking,
       effort: config.effort,
       cursor_lead_ms: config.cursorLeadMs,
+      cursor_gap: {
+        ms: config.cursorGapMs,
+        min_ms: config.cursorGapMinMs,
+        decay: config.cursorGapDecay,
+      },
       limits: {
         tool_calls_per_run: config.maxToolCallsPerRun,
         turns_per_run: config.maxTurnsPerRun,

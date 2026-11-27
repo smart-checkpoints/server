@@ -135,7 +135,19 @@ function waitForConfirmation(run, callId) {
   });
 }
 
-async function executeToolCall(run, block, lane) {
+/**
+ * How long after announcing a call to send it. Calls made together take turns
+ * by lane, `gap` apart; the gap shrinks with each batch of cursor calls in a
+ * run (`batch` counts from 0), so a run starts calm and gets busier.
+ */
+function cursorLead(lane, batch) {
+  // The minimum never raises a gap set lower than it (0 turns turns off).
+  const floor = Math.min(config.cursorGapMinMs, config.cursorGapMs);
+  const gap = Math.max(floor, config.cursorGapMs * config.cursorGapDecay ** batch);
+  return Math.round(config.cursorLeadMs + Math.max(0, lane - 1) * gap);
+}
+
+async function executeToolCall(run, block, lane, leadMs = config.cursorLeadMs) {
   const started = Date.now();
   const apiCalls = [];
   const emit = run.emit;
@@ -175,6 +187,10 @@ async function executeToolCall(run, block, lane) {
   }
 
   let confirmation = null;
+  // When the console was told the call was starting, and when it was sent:
+  // the difference lets the console check its click landed on time.
+  let announcedAt = null;
+  let sentAt = null;
   const finish = async (ok, result, extra = {}) => {
     releaseTurn();
     try {
@@ -189,6 +205,7 @@ async function executeToolCall(run, block, lane) {
       result,
       api_calls: apiCalls,
       ms: Date.now() - started,
+      ...(announcedAt !== null && sentAt !== null ? { sent_after_ms: sentAt - announcedAt } : {}),
       ...extra,
     });
     return toolResult(block.id, result, !ok);
@@ -214,7 +231,10 @@ async function executeToolCall(run, block, lane) {
       input: checked.value,
       lane,
       target: prepared.target,
+      // When the call will be sent, so the console can time the click to it.
+      ...(prepared.target ? { lead_ms: leadMs } : {}),
     });
+    announcedAt = Date.now();
 
     if (prepared.confirm) {
       emit("tool.confirm_required", {
@@ -225,7 +245,12 @@ async function executeToolCall(run, block, lane) {
         timeout_s: Math.round(config.confirmTimeoutMs / 1000),
       });
       confirmation = await waitForConfirmation(run, block.id);
-      emit("tool.confirmed", { call_id: block.id, outcome: confirmation });
+      emit("tool.confirmed", {
+        call_id: block.id,
+        outcome: confirmation,
+        ...(confirmation === "approved" && prepared.target ? { lead_ms: config.cursorLeadMs } : {}),
+      });
+      announcedAt = Date.now();
       if (confirmation !== "approved") {
         const why =
           confirmation === "declined"
@@ -236,16 +261,18 @@ async function executeToolCall(run, block, lane) {
         return finish(false, { declined: true, message: why }, { declined: true });
       }
       // The cursor carries the change out once approved (a move is dragged
-      // across the map); send the call as it lands.
+      // across the map); send the call as it lands. One approval at a time,
+      // so no turn to wait for.
       if (prepared.target) await sleep(config.cursorLeadMs, run.signal);
     } else if (prepared.target) {
-      // The cursor is on its way; send the call as it arrives.
-      await sleep(config.cursorLeadMs, run.signal);
+      // The cursor is on its way; send the call as it clicks.
+      await sleep(leadMs, run.signal);
     }
 
     if (waitForTurn) await waitForTurn;
     if (run.signal.aborted) return finish(false, { error: "The run was cancelled before this ran." });
 
+    if (prepared.target) sentAt = Date.now();
     const result = await tool.run(prepared.plan, ctx);
     return finish(true, result);
   } catch (err) {
@@ -392,6 +419,8 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, ret
 
   const startLength = session.messages.length;
   let consistentLength = startLength;
+  /** Batches of calls that had a cursor so far this run: sets the turn gap. */
+  let cursorBatches = 0;
   let toolCallsThisRun = 0;
   let turns = 0;
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
@@ -555,7 +584,11 @@ ${message}`
       // screen is always lane 1 whatever reads run beside it.
       let cursorLane = 0;
       const lanes = toolUses.map((block) => (CURSOR_TOOLS.has(block.name) ? ++cursorLane : 0));
-      const results = await Promise.all(toolUses.map((block, index) => executeToolCall(run, block, lanes[index])));
+      const batch = cursorBatches;
+      if (cursorLane > 0) cursorBatches += 1;
+      const results = await Promise.all(
+        toolUses.map((block, index) => executeToolCall(run, block, lanes[index], cursorLead(lanes[index], batch))),
+      );
       session.messages.push({ role: "user", content: results });
       consistentLength = session.messages.length;
 

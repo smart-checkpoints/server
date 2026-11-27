@@ -1069,7 +1069,8 @@ async function prepareMove(ctx, node, to) {
     Math.round(((bearing + 360) % 360) / 45) % 8
   ];
   return {
-    target: { kind: "node-move", node_id: node.node_id, to },
+    // `from` lets the console put the checkpoint back when it replays a run.
+    target: { kind: "node-move", node_id: node.node_id, from: { latitude: node.latitude, longitude: node.longitude }, to },
     confirm: {
       summary: `Move camera ${node.id_in_project} by ${metres} m ${compass}?`,
       details: [

@@ -41,6 +41,8 @@ export default function Panel({
       {open ? (
         <motion.aside
           aria-label={title}
+          // The agent's cursors do not park under an open panel.
+          data-cursor-avoid
           initial={reduceMotion ? false : { opacity: 0, x: offset }}
           animate={{ opacity: 1, x: 0 }}
           exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: offset }}

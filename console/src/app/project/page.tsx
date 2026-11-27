@@ -28,6 +28,7 @@ import TestDrivePanel, {
 import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
 import SayesDock from "@/components/console/agent/SayesDock";
+import type { ReplayMask } from "@/components/console/agent/cursors/replayMask";
 import type { Highlights } from "@/components/console/agent/useAgent";
 import type { AgentUiControl } from "@/lib/agent";
 import Badge from "@/components/ui/Badge";
@@ -71,6 +72,35 @@ export default function ProjectConsolePage() {
 
   const [nodes, setNodes] = useState<CheckpointNode[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
+
+  /* A Cursor Lab replay draws the graph as it was before the replayed run,
+     each change landing as its cursor clicks. Screen only: `nodes` and
+     `connections` stay the real data, and only the canvas sees the mask. */
+  const [replayMask, setReplayMask] = useState<ReplayMask | null>(null);
+  const shownNodes = useMemo(() => {
+    if (!replayMask) return nodes;
+    return nodes
+      .filter((n) => !replayMask.hiddenNodes.has(n.node_id))
+      .map((n) => {
+        const at = replayMask.nodeAt.get(n.node_id);
+        return at ? { ...n, latitude: at.latitude, longitude: at.longitude } : n;
+      });
+  }, [nodes, replayMask]);
+  const shownConnections = useMemo(() => {
+    if (!replayMask) return connections;
+    return connections
+      .filter(
+        (c) =>
+          !replayMask.hiddenConnections.has(c.connection_id) &&
+          !replayMask.hiddenNodes.has(c.from_node_id) &&
+          !replayMask.hiddenNodes.has(c.to_node_id),
+      )
+      .map((c) => {
+        const limit = replayMask.speedLimit.get(c.connection_id);
+        return limit === undefined ? c : { ...c, speed_limit: limit };
+      });
+  }, [connections, replayMask]);
+
   const [violations, setViolations] = useState<Violation[]>([]);
   const [liveViolations, setLiveViolations] = useState(0);
   const [congestion, setCongestion] = useState<Record<number, number>>({});
@@ -761,11 +791,11 @@ export default function ProjectConsolePage() {
       />
 
       <div className="console-shell flex bg-bg">
-        <div className="relative min-w-0 flex-1">
+        <div className="relative min-w-0 flex-1" data-cursor-stage>
         <GraphCanvas
           ref={canvas}
-          nodes={nodes}
-          connections={connections}
+          nodes={shownNodes}
+          connections={shownConnections}
           congestionTargets={congestion}
           flash={flash}
           nodeWarnings={nodeWarnings}
@@ -787,7 +817,7 @@ export default function ProjectConsolePage() {
 
         {agentHighlights.caption && (agentHighlights.connectionIds.length > 0 || agentHighlights.nodeIds.length > 0) ? (
           <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center">
-            <span className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
+            <span data-cursor-avoid className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
               {agentHighlights.caption}
             </span>
           </div>
@@ -822,7 +852,7 @@ export default function ProjectConsolePage() {
           <div className="flex h-full flex-col justify-between">
             <div className="flex items-start justify-between gap-4">
               {!presentation ? (
-                <div className="pointer-events-auto flex items-center gap-2">
+                <div data-cursor-avoid className="pointer-events-auto flex items-center gap-2">
                   <Button
                     size="sm"
                     variant="secondary"
@@ -854,16 +884,24 @@ export default function ProjectConsolePage() {
 
               {/* Framing and zooming are the graph's own; the map has its own. */}
               {activeView === "graph" && !presentation ? (
-                <CanvasControls
-                  onFit={() => canvas.current?.fit()}
-                  onZoomIn={() => canvas.current?.zoomBy(1.2)}
-                  onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
-                />
+                <div data-cursor-avoid>
+                  <CanvasControls
+                    onFit={() => canvas.current?.fit()}
+                    onZoomIn={() => canvas.current?.zoomBy(1.2)}
+                    onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
+                  />
+                </div>
               ) : null}
             </div>
 
             <div className="flex items-end justify-between gap-4">
-              {activeView === "graph" && !presentation ? <GraphLegend /> : <span />}
+              {activeView === "graph" && !presentation ? (
+                <div data-cursor-avoid>
+                  <GraphLegend />
+                </div>
+              ) : (
+                <span />
+              )}
               {testDriveOpen && isDemo ? (
                 <TestDrivePanel
                   ref={testDrive}
@@ -884,7 +922,7 @@ export default function ProjectConsolePage() {
                   onSave={saveEdge}
                 />
               ) : activeView === "graph" && !presentation ? (
-                <p className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
+                <p data-cursor-avoid className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
                   Drag between checkpoints to link · shift-drag to move one · F
                   to frame
                 </p>
@@ -960,6 +998,7 @@ export default function ProjectConsolePage() {
           onHighlights={setAgentHighlights}
           onActiveChange={setAgentActive}
           onControl={agentControl}
+          onReplayMask={setReplayMask}
         />
       </div>
 

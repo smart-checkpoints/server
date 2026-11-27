@@ -157,18 +157,19 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
   return { title, outcome };
 }
 
-/** Lanes are told apart by shade and number; status colours stay for status. */
 /**
- * Calls running at once, told apart by name and shade. Every shade is the
- * cyan family or ink from the design tokens, mixed where two would otherwise
- * look alike; status colours (green, yellow, red) are never used.
+ * The cursors, one per lane: calls running at once. Each has a name and its
+ * own hue, so they read as separate hands at a glance; the house cyan leads.
+ * Status colours (green, yellow, red) are never used. `ink` is the name tag's
+ * text colour, chosen for at least 4.5:1 on the tag. Tuk-tuk keeps the navy
+ * of the Vision cursor set the shapes are traced from.
  */
 export const LANES = [
-  { name: "Tram", colour: "var(--cyan)" },
-  { name: "Taxi", colour: "var(--cyan-dark)" },
-  { name: "Microbus", colour: "var(--text)" },
-  { name: "Metro", colour: "color-mix(in oklab, var(--cyan-dark) 55%, var(--text))" },
-  { name: "Tuk-tuk", colour: "var(--text-dim)" },
+  { name: "Tram", colour: "#19c4d8", ink: "#1e2628" },
+  { name: "Taxi", colour: "#4361ee", ink: "#ffffff" },
+  { name: "Microbus", colour: "#7a4ff0", ink: "#ffffff" },
+  { name: "Metro", colour: "#c4368c", ink: "#ffffff" },
+  { name: "Tuk-tuk", colour: "#0c1e35", ink: "#ffffff" },
 ];
 
 const lane = (n: number) => LANES[(Math.max(1, n) - 1) % LANES.length];
@@ -180,6 +181,21 @@ export function laneColour(n: number) {
 export function laneName(n: number) {
   return lane(n).name;
 }
+
+export function laneInk(n: number) {
+  return lane(n).ink;
+}
+
+/** The tools that get a cursor: the same list as CURSOR_TOOLS in agent/runner.js. */
+export const CURSOR_TOOLS = new Set([
+  "create_checkpoint",
+  "create_edge",
+  "set_speed_limit",
+  "move_checkpoint_by",
+  "move_checkpoint_to",
+  "get_violation_summary",
+  "get_diagnostics",
+]);
 
 export const EXAMPLE_PROMPTS = [
   "Set up three checkpoints along the Corniche, speed limit 50, and connect them.",

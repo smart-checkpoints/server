@@ -87,6 +87,8 @@ export type GraphCanvasHandle = {
   nodeToClient: (nodeId: number) => Point | null;
   /** The midpoint of an edge as drawn, two-way offset included. */
   edgeToClient: (connectionId: number) => Point | null;
+  /** Both ends of an edge as drawn, two-way offset included. */
+  edgeEndsToClient: (connectionId: number) => { a: Point; b: Point } | null;
   /** Whether a coordinate is on screen with `margin` pixels to spare. */
   isVisible: (lat: number, lng: number, margin?: number) => boolean;
   /**
@@ -469,6 +471,23 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         };
         const findNode = (nodeId: number) =>
           data.current.nodes.find((node) => node.node_id === nodeId) ?? null;
+        /** An edge's two ends as drawn, in world units, two-way offset included. */
+        const edgeEnds = (connectionId: number) => {
+          const edge = data.current.connections.find((e) => e.connection_id === connectionId);
+          const from = edge && findNode(edge.from_node_id);
+          const to = edge && findNode(edge.to_node_id);
+          if (!edge || !from || !to) return null;
+          const a = nodeXY(from);
+          const b = nodeXY(to);
+          const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+          const twoWay = data.current.connections.some(
+            (e) => e.from_node_id === edge.to_node_id && e.to_node_id === edge.from_node_id,
+          );
+          const offset = twoWay ? EDGE_OFFSET / view.current.zoom : 0;
+          const ox = (-(b.y - a.y) / length) * offset;
+          const oy = ((b.x - a.x) / length) * offset;
+          return { a: { x: a.x + ox, y: a.y + oy }, b: { x: b.x + ox, y: b.y + oy } };
+        };
 
         return {
           fit,
@@ -488,21 +507,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           },
 
           edgeToClient: (connectionId) => {
-            const edge = data.current.connections.find((e) => e.connection_id === connectionId);
-            const from = edge && findNode(edge.from_node_id);
-            const to = edge && findNode(edge.to_node_id);
-            if (!edge || !from || !to) return null;
-            const a = nodeXY(from);
-            const b = nodeXY(to);
-            const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
-            const twoWay = data.current.connections.some(
-              (e) => e.from_node_id === edge.to_node_id && e.to_node_id === edge.from_node_id,
-            );
-            const offset = twoWay ? EDGE_OFFSET / view.current.zoom : 0;
-            return toClient({
-              x: (a.x + b.x) / 2 + (-(b.y - a.y) / length) * offset,
-              y: (a.y + b.y) / 2 + ((b.x - a.x) / length) * offset,
-            });
+            const ends = edgeEnds(connectionId);
+            return ends ? toClient({ x: (ends.a.x + ends.b.x) / 2, y: (ends.a.y + ends.b.y) / 2 }) : null;
+          },
+
+          edgeEndsToClient: (connectionId) => {
+            const ends = edgeEnds(connectionId);
+            const a = ends && toClient(ends.a);
+            const b = ends && toClient(ends.b);
+            return a && b ? { a, b } : null;
           },
 
           isVisible: (lat, lng, margin = 60) => {

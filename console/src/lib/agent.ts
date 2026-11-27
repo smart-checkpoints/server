@@ -12,7 +12,13 @@ export type AgentTarget =
   | { kind: "edge-new"; from_node_id: number; to_node_id: number }
   | { kind: "edge"; connection_id: number }
   | { kind: "node"; node_id: number }
-  | { kind: "node-move"; node_id: number; to: { latitude: number; longitude: number } }
+  | {
+      kind: "node-move";
+      node_id: number;
+      /** Where it was before the move (servers from before this field may leave it out). */
+      from?: { latitude: number; longitude: number };
+      to: { latitude: number; longitude: number };
+    }
   | { kind: "ui"; element: AgentUiElement };
 
 /** The console controls a cursor can go to, by their `data-agent-target`. */
@@ -33,6 +39,8 @@ export type AgentInfo = {
   thinking: string;
   effort: string;
   cursor_lead_ms: number;
+  /** How far apart calls made together land, and how that shrinks per batch. */
+  cursor_gap?: { ms: number; min_ms: number; decay: number };
   limits: { tool_calls_per_run: number; turns_per_run: number; tool_calls_per_session: number };
   busy: boolean;
   places: string[];
@@ -52,6 +60,8 @@ export type AgentEvents = {
     input: Record<string, unknown>;
     lane: number;
     target: AgentTarget | null;
+    /** For a call with a target: when the server will send it, from now. */
+    lead_ms?: number;
   };
   "tool.progress": { call_id: string; state: "measuring"; note: string };
   "tool.confirm_required": {
@@ -61,7 +71,12 @@ export type AgentEvents = {
     details: string[];
     timeout_s: number;
   };
-  "tool.confirmed": { call_id: string; outcome: "approved" | "declined" | "timed-out" | "cancelled" };
+  "tool.confirmed": {
+    call_id: string;
+    outcome: "approved" | "declined" | "timed-out" | "cancelled";
+    /** Approved with a target: when the server will send it, from now. */
+    lead_ms?: number;
+  };
   "tool.finished": {
     call_id: string;
     tool: string;
@@ -70,6 +85,8 @@ export type AgentEvents = {
     result: Record<string, unknown>;
     api_calls: AgentApiCall[];
     ms: number;
+    /** For a call with a target: how long after its last announcement it was sent. */
+    sent_after_ms?: number;
   };
   highlight: { connection_ids: number[]; node_ids: number[]; caption: string };
   "ui.control": AgentUiControl;

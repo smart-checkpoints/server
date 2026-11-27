@@ -15,6 +15,7 @@ import type { AgentUiControl } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { houseEase } from "@/lib/ease";
 import CursorLayer from "./CursorLayer";
+import type { ReplayMask } from "./cursors/replayMask";
 import Markdown from "./Markdown";
 import SayesMark from "./SayesMark";
 import { describeAction, EXAMPLE_PROMPTS, laneColour, type CameraOf } from "./labels";
@@ -34,10 +35,13 @@ export type SayesDockProps = {
   onActiveChange?: (active: boolean) => void;
   /** Carries out what Sayes asked the console to show: framing, the view, a panel. */
   onControl?: (control: AgentUiControl) => void;
+  /** While the last run is replayed, how the page should draw the graph (see CursorLayer). */
+  onReplayMask?: (mask: ReplayMask | null) => void;
 };
 
 const OPEN_KEY = "sayes.open";
 const NO_ACTIONS: AgentAction[] = [];
+const noReplay = () => {};
 
 const isMac = () => typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
 const modKey = () => (isMac() ? "⌘" : "Ctrl");
@@ -230,8 +234,11 @@ export default function SayesDock(props: SayesDockProps) {
         subscribe={agent.subscribe}
         canvas={props.canvas}
         origin={origin}
-        leadMs={info?.cursor_lead_ms ?? 700}
+        leadMs={info?.cursor_lead_ms ?? 850}
         cameraOf={cameraOf}
+        info={info}
+        presentation={presentation}
+        onReplayMask={props.onReplayMask ?? noReplay}
       />
     </>
   );

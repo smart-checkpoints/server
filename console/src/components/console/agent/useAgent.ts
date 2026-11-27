@@ -8,6 +8,7 @@ import {
   streamRun,
   type AgentApiCall,
   type AgentAttachment,
+  type AgentEffort,
   type AgentEvent,
   type AgentInfo,
   type AgentTarget,
@@ -59,6 +60,8 @@ export type AgentTurn = {
   finishedAt?: number;
   model?: string;
   modelTurns?: number;
+  /** The effort the run used, and how it was decided. */
+  effort?: { level: string; chosen: string; reason: string };
   /** Saved before this request changed anything; restoring it undoes the request. */
   restorePoint?: { id: number; name: string };
   /** PDF reports written during this request. */
@@ -185,7 +188,7 @@ export function useAgent(projectId: number, apiKey: string) {
   );
 
   const send = useCallback(
-    async (message: string, options: { retry?: boolean; attachments?: AgentAttachment[] } = {}) => {
+    async (message: string, options: { retry?: boolean; attachments?: AgentAttachment[]; effort?: AgentEffort } = {}) => {
       const files = options.attachments ?? [];
       const text = message.trim() || (files.length ? "Here are the attached files." : "");
       if (!text || busy) return;
@@ -217,7 +220,7 @@ export function useAgent(projectId: number, apiKey: string) {
           case "run.started":
             runId.current = event.data.run_id;
             sessionId.current = event.data.session_id;
-            updateTurn(turnId, (turn) => ({ ...turn, model: event.data.model }));
+            updateTurn(turnId, (turn) => ({ ...turn, model: event.data.model, effort: event.data.effort }));
             break;
           case "thinking.started":
             setThinking(true);
@@ -354,6 +357,7 @@ export function useAgent(projectId: number, apiKey: string) {
             session_id: sessionId.current,
             ...(options.retry ? { retry: true } : {}),
             ...(files.length ? { attachments: files } : {}),
+            ...(options.effort ? { effort: options.effort } : {}),
           },
           onEvent,
           abort.signal,

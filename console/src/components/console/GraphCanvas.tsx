@@ -188,6 +188,17 @@ const FLASH_DECAY = 0.016;
  * reserved for things that are actually wrong or actually measured: an edge
  * with no resolved distance, and live congestion.
  */
+/**
+ * The part of the canvas width the camera frames into. Sayes floats over the
+ * right of the canvas and publishes how much it covers as `--sayes-inset`;
+ * framing in what it leaves keeps no checkpoint under the panel.
+ */
+function usableWidth(fullWidth: number) {
+  if (typeof document === "undefined") return fullWidth;
+  const inset = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sayes-inset")) || 0;
+  return Math.max(fullWidth * 0.4, fullWidth - inset);
+}
+
 const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
   function GraphCanvas(
     {
@@ -339,7 +350,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     /** The view that frames `points` (world metres), or null with no room yet. */
     const viewFor = useCallback((points: Point[]) => {
-      const { width, height } = size.current;
+      const { width: fullWidth, height } = size.current;
+      const width = usableWidth(fullWidth);
       if (points.length === 0 || width === 0) return null;
       const minX = Math.min(...points.map((p) => p.x));
       const maxX = Math.max(...points.map((p) => p.x));
@@ -365,7 +377,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     const fit = useCallback(() => {
       ensureProjection();
-      const { width, height } = size.current;
+      const { width: fullWidth, height } = size.current;
+      const width = usableWidth(fullWidth);
       const list = data.current.nodes;
       if (!projection.current || list.length === 0 || width === 0) return;
 

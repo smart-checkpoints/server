@@ -50,9 +50,11 @@ export default function Panel({
           className={cn(
             "pointer-events-auto absolute top-4 bottom-4 z-30 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col",
             "overflow-hidden rounded-2xl border border-border bg-surface shadow-lg",
-            side === "right" ? "right-4" : "left-4",
+            side === "right" ? "sayes-clear" : "left-4",
             className,
           )}
+          // A right-hand panel sits beside Sayes's floating panel, not under it.
+          style={side === "right" ? { right: "calc(1rem + var(--sayes-inset, 0px))" } : undefined}
         >
           <header className="flex items-center justify-between gap-4 border-b border-border px-5 py-4">
             <h2 className="font-display text-base font-bold text-text">{title}</h2>

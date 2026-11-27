@@ -816,7 +816,10 @@ export default function ProjectConsolePage() {
         />
 
         {agentHighlights.caption && (agentHighlights.connectionIds.length > 0 || agentHighlights.nodeIds.length > 0) ? (
-          <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center">
+          <div
+            className="sayes-clear pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center"
+            style={{ right: "var(--sayes-inset, 0px)" }}
+          >
             <span data-cursor-avoid className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
               {agentHighlights.caption}
             </span>
@@ -848,7 +851,10 @@ export default function ProjectConsolePage() {
         ) : null}
 
         {/* The overlay does not take pointer events; each control opts back in. */}
-        <div className="pointer-events-none absolute inset-0 p-4">
+        <div
+          className="sayes-clear pointer-events-none absolute inset-0 p-4"
+          style={{ paddingRight: "calc(1rem + var(--sayes-inset, 0px))" }}
+        >
           <div className="flex h-full flex-col justify-between">
             <div className="flex items-start justify-between gap-4">
               {!presentation ? (
@@ -894,7 +900,10 @@ export default function ProjectConsolePage() {
               ) : null}
             </div>
 
-            <div className="flex items-end justify-between gap-4">
+            <div
+              className="sayes-clear flex items-end justify-between gap-4"
+              style={{ paddingRight: "calc(var(--sayes-bottom-inset, 0px) - var(--sayes-inset, 0px))" }}
+            >
               {activeView === "graph" && !presentation ? (
                 <div data-cursor-avoid>
                   <GraphLegend />

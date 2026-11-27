@@ -30,6 +30,9 @@ export type AgentUiControl =
   | { action: "view"; view: "graph" | "map" }
   | { action: "panel"; panel: "quality" | "violations" | "none" };
 
+/** How hard the model works on a request. Auto lets the server pick per request. */
+export type AgentEffort = "auto" | "low" | "medium" | "high";
+
 /** A file sent with a message: base64 data, at most 5 per message. */
 export type AgentAttachment = { name: string; type: string; data: string };
 
@@ -51,7 +54,13 @@ export type AgentInfo = {
 
 /** Every event a run can send, by name. */
 export type AgentEvents = {
-  "run.started": { run_id: string; session_id: string; model: string };
+  "run.started": {
+    run_id: string;
+    session_id: string;
+    model: string;
+    /** The effort this run uses, whether it was chosen or picked by Auto, and why. */
+    effort?: { level: "low" | "medium" | "high"; chosen: AgentEffort; reason: string };
+  };
   "thinking.started": { turn: number };
   "thinking.stopped": { turn: number };
   "note.delta": { text: string };
@@ -249,7 +258,7 @@ export function cancelRun(projectId: number, apiKey: string, runId: string) {
 export async function streamRun(
   projectId: number,
   apiKey: string,
-  body: { message: string; session_id?: string | null; retry?: boolean; attachments?: AgentAttachment[] },
+  body: { message: string; session_id?: string | null; retry?: boolean; attachments?: AgentAttachment[]; effort?: AgentEffort },
   onEvent: (event: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {

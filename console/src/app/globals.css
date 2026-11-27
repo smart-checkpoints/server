@@ -534,6 +534,23 @@ html[data-presentation] {
 
 /* The composer draws its focus on its outer box, so the textarea itself
    shows none. */
+/* Overlays that move aside for Sayes's floating panel slide rather than jump. */
+.sayes-clear {
+  transition:
+    padding-right 240ms cubic-bezier(0.22, 1, 0.36, 1),
+    right 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* The status dot breathes while Sayes works. */
+@keyframes agent-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.agent-pulse {
+  animation: agent-pulse 1.2s ease-in-out infinite;
+}
+
 .sayes-input:focus-visible {
   outline: none;
   box-shadow: none;

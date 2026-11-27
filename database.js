@@ -288,6 +288,16 @@ function migrateViolationConnection(db) {
   return addMissingColumns(db, "violations", [["connection_id", "INTEGER"]]);
 }
 
+/**
+ * Adds the demo flag. A demo project lets an operator drive a test car
+ * between checkpoints from the console; the sightings that drive produces go
+ * through `/report-checkpoint` like any camera's, so the flag changes what the
+ * console offers and nothing about how a violation is decided.
+ */
+function migrateDemoFlag(db) {
+  return addMissingColumns(db, "projects", [["is_demo", "INTEGER DEFAULT 0"]]);
+}
+
 function initializeDatabase(db) {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
@@ -302,6 +312,7 @@ function initializeDatabase(db) {
           .then(() => migrateEndpointsHash(db))
           .then(() => migrateMapDriver(db))
           .then(() => migrateViolationConnection(db))
+          .then(() => migrateDemoFlag(db))
           .then(() => resolve(), reject);
       });
     });
@@ -571,12 +582,32 @@ function normaliseStatus(status) {
 }
 
 const statements = {
-  createProject: async (projectName, apiKey, db) => {
+  createProject: async (projectName, apiKey, db, isDemo = false) => {
     return await addEntry(
       "projects",
-      { project_name: projectName, api_key: apiKey },
+      { project_name: projectName, api_key: apiKey, is_demo: isDemo ? 1 : 0 },
       db,
     );
+  },
+
+  getProjectDemo: (projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.get(
+        "SELECT is_demo FROM projects WHERE project_id = ?",
+        [projectId],
+        (err, row) => (err ? reject(err) : resolve(Boolean(row?.is_demo))),
+      );
+    });
+  },
+
+  setProjectDemo: (projectId, isDemo, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE projects SET is_demo = ? WHERE project_id = ?",
+        [isDemo ? 1 : 0, projectId],
+        (err) => (err ? reject(err) : resolve(Boolean(isDemo))),
+      );
+    });
   },
 
   getNextIdInProject: (projectId, db) => {
@@ -777,7 +808,8 @@ const statements = {
   listProjects: (db) => {
     return new Promise((resolve, reject) => {
       db.all(
-        "SELECT project_id, project_name, node_count, connection_count FROM projects",
+        "SELECT project_id, project_name, node_count, connection_count, " +
+          "COALESCE(is_demo, 0) AS is_demo FROM projects",
         [],
         (err, rows) => {
           if (err) {

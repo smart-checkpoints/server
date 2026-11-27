@@ -22,6 +22,8 @@ export type ProjectSummary = {
   project_name: string;
   node_count: number;
   connection_count: number;
+  /** 1 for a demo project, whose console can drive a test car. */
+  is_demo?: number;
 };
 
 export type AdminProject = ProjectSummary & {
@@ -198,10 +200,39 @@ export function getThumbnailData(
 
 export function createProject(
   name: string,
+  demo = false,
 ): Promise<{ project_id: number; api_key: string }> {
   return request("/create-project", {
     method: "POST",
-    body: { "project-name": name },
+    body: { "project-name": name, ...(demo ? { demo: true } : {}) },
+  });
+}
+
+/* -------------------------------------------------------------------------
+   Demo projects
+
+   A demo project's console can drive a test car between checkpoints. The
+   flag gates what the console offers; the sightings the car produces go
+   through `/report-checkpoint` exactly as a camera's do.
+   ------------------------------------------------------------------------- */
+
+export function getDemo(
+  projectId: number,
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<{ is_demo: boolean }> {
+  return request(`/project/${projectId}/demo`, { apiKey, signal });
+}
+
+export function setDemo(
+  projectId: number,
+  apiKey: string,
+  enabled: boolean,
+): Promise<{ is_demo: boolean }> {
+  return request(`/project/${projectId}/demo`, {
+    method: "PUT",
+    apiKey,
+    body: { enabled },
   });
 }
 
@@ -580,6 +611,35 @@ export function getViolations(
   return request<Violation[]>(`/project/${projectId}/violations`, {
     apiKey,
     signal,
+  });
+}
+
+/** What the server decided about one sighting, as `/report-checkpoint` answers. */
+export type SightingResult = {
+  status: boolean;
+  carSpeed: number;
+  legalLimit: number;
+  reason: string | null;
+  outOfOrder?: boolean;
+  distanceStatus?: DistanceStatus;
+};
+
+/**
+ * Reports one sighting, exactly as a camera does: plate, checkpoint, time.
+ * The server decides from there; nothing in the console computes a violation.
+ */
+export function reportSighting(
+  apiKey: string,
+  sighting: { plate: string; idInProject: number; timestamp: string },
+): Promise<SightingResult> {
+  return request<SightingResult>("/report-checkpoint", {
+    method: "POST",
+    apiKey,
+    body: {
+      "car-plate": sighting.plate,
+      "id-in-project": sighting.idInProject,
+      timestamp: sighting.timestamp,
+    },
   });
 }
 

@@ -96,6 +96,20 @@ export type GraphCanvasHandle = {
   frame: (extra?: LatLng[], durationMs?: number) => void;
   /** Called after every repaint: pan, zoom, camera moves, data changes. */
   subscribe: (listener: () => void) => () => void;
+  /**
+   * Places a demo project's test car, or removes it with null. Imperative
+   * because it moves every frame, and a prop would re-render the page to do it.
+   */
+  setVehicle: (vehicle: CanvasVehicle | null) => void;
+};
+
+/** A test car on the straight line of one edge, `t` of the way along it. */
+export type CanvasVehicle = {
+  fromNodeId: number;
+  toNodeId: number;
+  t: number;
+  label: string;
+  violation: boolean;
 };
 
 type HoverInfo = {
@@ -138,6 +152,15 @@ type GraphCanvasProps = {
   highlightedNodeIds?: number[];
   /** Hover cards off, for screen recording. */
   showHover?: boolean;
+  /** A checkpoint clicked without dragging. */
+  onClickNode?: (node: CheckpointNode) => void;
+  /**
+   * A test drive is picking checkpoints: a press on one is a pick, never a
+   * move or a new edge.
+   */
+  pickMode?: boolean;
+  /** The checkpoints a test drive has picked, ringed and named on the canvas. */
+  picks?: { start: number | null; end: number | null };
 };
 
 /** A stable empty list, so a missing prop does not repaint every render. */
@@ -176,6 +199,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       highlightedConnectionIds = EMPTY_IDS,
       highlightedNodeIds = EMPTY_IDS,
       showHover = true,
+      onClickNode,
+      pickMode = false,
+      picks,
     },
     ref,
   ) {
@@ -199,6 +225,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       selectedConnectionId,
       highlightedConnectionIds,
       highlightedNodeIds,
+      picks,
+      pickMode,
     });
     data.current = {
       nodes,
@@ -208,6 +236,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       selectedConnectionId,
       highlightedConnectionIds,
       highlightedNodeIds,
+      picks,
+      pickMode,
     };
 
     /* Whoever is drawing over the canvas, told after each repaint. */
@@ -383,6 +413,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       paintNow();
     }, [paintNow]);
 
+    const vehicle = useRef<CanvasVehicle | null>(null);
+
     useImperativeHandle(
       ref,
       () => {
@@ -408,6 +440,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           zoomBy: (factor: number) =>
             zoomAt(factor, size.current.width / 2, size.current.height / 2),
           clearMove,
+          setVehicle: (next: CanvasVehicle | null) => {
+            vehicle.current = next;
+            paintNow();
+          },
 
           latLngToClient: (lat, lng) => toClient(projectLatLng(lat, lng)),
 
@@ -816,7 +852,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         }
 
         /* The edge being drawn out of a checkpoint. */
-        if (state.mode === "linking" && state.linkFrom) {
+        if (state.mode === "linking" && state.linkFrom && !data.current.pickMode) {
           const from = positions.get(state.linkFrom.node_id);
           if (from) {
             const to = toWorld(state.pointerX, state.pointerY);
@@ -885,6 +921,57 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           if (warnings[node.node_id]) {
             drawWarningBadge(ctx, tokens, point, nodeRadius, zoom);
           }
+
+          const pick =
+            data.current.picks?.start === node.node_id
+              ? "START"
+              : data.current.picks?.end === node.node_id
+                ? "END"
+                : null;
+          if (pick) {
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, nodeRadius + 7 / zoom, 0, Math.PI * 2);
+            ctx.lineWidth = 3 / zoom;
+            ctx.strokeStyle = tokens.cyan;
+            ctx.stroke();
+            ctx.font = `700 ${11 / zoom}px ${monoFamily()}`;
+            ctx.lineWidth = 3 / zoom;
+            ctx.strokeStyle = tokens.bg;
+            ctx.strokeText(pick, point.x, point.y + nodeRadius + 18 / zoom);
+            ctx.fillStyle = tokens.cyanDark;
+            ctx.fillText(pick, point.x, point.y + nodeRadius + 18 / zoom);
+            ctx.font = `600 ${(NODE_RADIUS * 0.72) / zoom}px ${monoFamily()}`;
+          }
+        }
+
+        /* A demo project's test car, above everything it drives past. */
+        const car = vehicle.current;
+        const carFrom = car ? positions.get(car.fromNodeId) : undefined;
+        const carTo = car ? positions.get(car.toNodeId) : undefined;
+        if (car && carFrom && carTo) {
+          const cx = carFrom.x + (carTo.x - carFrom.x) * car.t;
+          const cy = carFrom.y + (carTo.y - carFrom.y) * car.t;
+          const colour = car.violation ? tokens.red : tokens.text;
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, 13 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = withAlpha(colour, 0.18);
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(cx, cy, 7 / zoom, 0, Math.PI * 2);
+          ctx.fillStyle = colour;
+          ctx.fill();
+          ctx.lineWidth = 2.5 / zoom;
+          ctx.strokeStyle = tokens.surface;
+          ctx.stroke();
+
+          ctx.font = `600 ${11 / zoom}px ${monoFamily()}`;
+          ctx.lineWidth = 3 / zoom;
+          ctx.strokeStyle = tokens.bg;
+          ctx.strokeText(car.label, cx, cy - 20 / zoom);
+          ctx.fillStyle = colour;
+          ctx.fillText(car.label, cx, cy - 20 / zoom);
         }
 
         ctx.restore();
@@ -904,6 +991,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       selectedConnectionId,
       highlightedConnectionIds,
       highlightedNodeIds,
+      picks,
       paintNow,
     ]);
 
@@ -950,6 +1038,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       state.pointerX = x;
       state.pointerY = y;
+      state.originX = x;
+      state.originY = y;
       state.moved = false;
 
       // Middle button always pans, whatever is under it.
@@ -959,7 +1049,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         // Drawing the graph is the frequent action and keeps the unmodified
         // gesture; moving a camera changes what counts as speeding, so it is
         // the deliberate one - and it still has to be confirmed after that.
-        if (event.shiftKey) {
+        if (event.shiftKey && !pickMode) {
           state.mode = "moving";
           state.moveNode = node;
           movePreview.current = {
@@ -996,7 +1086,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       }
 
       if (state.mode === "linking") {
-        state.moved = true;
+        // A few pixels of jitter is still a click on the checkpoint.
+        if (Math.hypot(x - state.originX, y - state.originY) > 4) {
+          state.moved = true;
+        }
         paintNow();
         return;
       }
@@ -1034,8 +1127,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
               `Checkpoint ${node.id_in_project}`,
               `${node.latitude.toFixed(5)}, ${node.longitude.toFixed(5)}`,
               ...(warning ? [warning] : []),
-              "Drag to another checkpoint to link",
-              "Shift-drag to correct its position",
+              ...(pickMode
+                ? ["Click to pick it for the test drive"]
+                : [
+                    "Drag to another checkpoint to link",
+                    "Shift-drag to correct its position",
+                  ]),
             ],
           });
         } else if (edge) {
@@ -1102,8 +1199,16 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
       if (state.mode === "linking" && state.linkFrom) {
         const target = nodeAt(world.x, world.y);
-        if (target && target.node_id !== state.linkFrom.node_id) {
+        if (pickMode) {
+          // A test drive picks the checkpoint the press started on.
+          if (!state.moved && target?.node_id === state.linkFrom.node_id) {
+            onClickNode?.(target);
+          }
+        } else if (target && target.node_id !== state.linkFrom.node_id) {
           onDraftEdge({ from: state.linkFrom, to: target });
+        } else if (target && !state.moved) {
+          // Pressed and released on the same checkpoint: a click, not a link.
+          onClickNode?.(target);
         }
         state.linkFrom = null;
         state.mode = "idle";

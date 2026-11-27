@@ -54,9 +54,16 @@ export default function ProjectCard({ project, onOpen }: ProjectCardProps) {
             {pluralise(project.connection_count ?? 0, "edge")}
           </p>
         </div>
-        <Badge tone="neutral" mono className="shrink-0">
-          #{project.project_id}
-        </Badge>
+        <div className="flex shrink-0 items-center gap-2">
+          {project.is_demo ? (
+            <Badge tone="accent" mono>
+              Demo
+            </Badge>
+          ) : null}
+          <Badge tone="neutral" mono>
+            #{project.project_id}
+          </Badge>
+        </div>
       </div>
     </button>
   );

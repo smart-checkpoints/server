@@ -7,7 +7,7 @@ import ReporterKeys from "@/components/console/ReporterKeys";
 import Button from "@/components/ui/Button";
 import CopyButton from "@/components/ui/CopyButton";
 import Panel from "@/components/ui/Panel";
-import type { MapDriverState } from "@/lib/api";
+import { setDemo, type MapDriverState } from "@/lib/api";
 import { maskKey, pluralise } from "@/lib/format";
 import type { ConsoleSession } from "@/lib/session";
 import { docsLinks } from "@/lib/site";
@@ -22,6 +22,8 @@ type SettingsPanelProps = {
   realtimeConnected: boolean;
   mapDriver: MapDriverState;
   onMapDriverChange: (state: MapDriverState) => void;
+  isDemo: boolean;
+  onDemoChange: (isDemo: boolean) => void;
   onSignOut: () => void;
 };
 
@@ -53,9 +55,26 @@ export default function SettingsPanel({
   realtimeConnected,
   mapDriver,
   onMapDriverChange,
+  isDemo,
+  onDemoChange,
   onSignOut,
 }: SettingsPanelProps) {
   const [revealed, setRevealed] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [demoError, setDemoError] = useState<string | null>(null);
+
+  async function toggleDemo() {
+    setDemoBusy(true);
+    setDemoError(null);
+    try {
+      const result = await setDemo(session.project_id, session.apiKey, !isDemo);
+      onDemoChange(result.is_demo);
+    } catch (err) {
+      setDemoError(err instanceof Error ? err.message : "Could not change it");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
 
   return (
     <Panel
@@ -128,6 +147,30 @@ export default function SettingsPanel({
             is never put in a link. Cameras should not hold it - issue each one
             a key of its own below.
           </p>
+        </div>
+
+        <div className="mt-6 rounded-xl border border-border bg-bg-subtle p-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="font-mono text-xs font-semibold uppercase tracking-[0.14em] text-text-dim">
+              Demo project
+            </p>
+            <Button
+              variant={isDemo ? "primary" : "secondary"}
+              size="sm"
+              onClick={() => void toggleDemo()}
+              disabled={demoBusy}
+            >
+              {isDemo ? "On" : "Off"}
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-text-dim">
+            A demo project can drive a test car between checkpoints. Its
+            sightings go to the server like a camera&apos;s and are judged the
+            same way, so keep it off on a project that enforces real roads.
+          </p>
+          {demoError ? (
+            <p className="mt-2 text-xs text-red">{demoError}</p>
+          ) : null}
         </div>
 
         <MapDriverSettings

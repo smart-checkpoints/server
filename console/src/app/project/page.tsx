@@ -21,17 +21,23 @@ import MoveCheckpointDialog from "@/components/console/MoveCheckpointDialog";
 import NewConnectionDialog from "@/components/console/NewConnectionDialog";
 import ProjectGate from "@/components/console/ProjectGate";
 import SettingsPanel from "@/components/console/SettingsPanel";
+import TestDrivePanel, {
+  type TestDriveHandle,
+  type VehicleFrame,
+} from "@/components/console/TestDrivePanel";
 import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
 import AgentPanel from "@/components/console/agent/AgentPanel";
 import CursorLayer from "@/components/console/agent/CursorLayer";
 import { useAgent } from "@/components/console/agent/useAgent";
+import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import Nav from "@/components/ui/Nav";
 import {
   createNode,
   getConnections,
+  getDemo,
   getDiagnostics,
   getDistanceDriverStatus,
   getGeometry,
@@ -48,7 +54,7 @@ import {
 } from "@/lib/api";
 import { pluralise } from "@/lib/format";
 import { haversineMeters } from "@/lib/geo";
-import type { BridgeSelection } from "@/lib/mapbridge";
+import type { BridgeSelection, BridgeVehicle } from "@/lib/mapbridge";
 import type { ConsoleSocket } from "@/lib/realtime";
 import { connectProject } from "@/lib/realtime";
 import { clearSession, useConsoleSession } from "@/lib/session";
@@ -100,6 +106,15 @@ export default function ProjectConsolePage() {
   const [geometryVersion, setGeometryVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
+  /* A demo project can drive a test car between checkpoints. */
+  const [isDemo, setIsDemo] = useState(false);
+  const [testDriveOpen, setTestDriveOpen] = useState(false);
+  const [picks, setPicks] = useState<{ start: number | null; end: number | null }>(
+    { start: null, end: null },
+  );
+  const testDrive = useRef<TestDriveHandle>(null);
+  const mapVehicle = useRef<((vehicle: BridgeVehicle) => void) | null>(null);
+
   const [selected, setSelected] = useState<Connection | null>(null);
   const [draft, setDraft] = useState<EdgeDraft | null>(null);
   const [moveDraft, setMoveDraft] = useState<MoveDraft | null>(null);
@@ -146,7 +161,7 @@ export default function ProjectConsolePage() {
     const { project_id: projectId, apiKey } = session;
 
     void (async () => {
-      const [nodeRows, edgeRows, violationRows, driver, quality, map] =
+      const [nodeRows, edgeRows, violationRows, driver, quality, map, demo] =
         await Promise.all([
           getNodes(projectId, apiKey, controller.signal).catch(() => []),
           getConnections(projectId, apiKey, controller.signal).catch(() => []),
@@ -162,6 +177,7 @@ export default function ProjectConsolePage() {
           getMapDriverState(projectId, apiKey, controller.signal).catch(
             () => null,
           ),
+          getDemo(projectId, apiKey, controller.signal).catch(() => null),
         ]);
 
       if (controller.signal.aborted) return;
@@ -170,6 +186,7 @@ export default function ProjectConsolePage() {
       setViolations(violationRows);
       setDriverConnected(driver.connected);
       if (map) setMapDriver(map);
+      setIsDemo(demo?.is_demo === true);
       if (quality) {
         setDiagnostics(quality);
         setCheckedAt(Date.now());
@@ -355,6 +372,10 @@ export default function ProjectConsolePage() {
   /** An edge chosen on the map opens the same editor a click on the graph does. */
   const selectFromMap = useCallback(
     (selection: BridgeSelection) => {
+      if (selection.kind === "node" && testDriveOpen) {
+        testDrive.current?.pick(selection.id);
+        return;
+      }
       if (selection.kind === "edge") {
         setSelected(
           connections.find((edge) => edge.connection_id === selection.id) ??
@@ -364,8 +385,37 @@ export default function ProjectConsolePage() {
       }
       if (selection.kind === null) setSelected(null);
     },
-    [connections],
+    [connections, testDriveOpen],
   );
+
+  /** The test car, drawn by whichever views exist. Called every frame. */
+  const showVehicle = useCallback((vehicle: VehicleFrame | null) => {
+    canvas.current?.setVehicle(
+      vehicle
+        ? {
+            fromNodeId: vehicle.fromNodeId,
+            toNodeId: vehicle.toNodeId,
+            t: vehicle.t,
+            label: vehicle.label,
+            violation: vehicle.violation,
+          }
+        : null,
+    );
+    mapVehicle.current?.(
+      vehicle
+        ? {
+            position: vehicle.position,
+            label: vehicle.label,
+            violation: vehicle.violation,
+          }
+        : { position: null, label: "", violation: false },
+    );
+  }, []);
+
+  const changeDemo = useCallback((next: boolean) => {
+    setIsDemo(next);
+    if (!next) setTestDriveOpen(false);
+  }, []);
 
   /** The add dialog, blank from a button or pre-filled from a map right-click. */
   const openAddCheckpoint = useCallback(
@@ -386,6 +436,8 @@ export default function ProjectConsolePage() {
    */
   const moveFromMap = useCallback(
     (nodeId: number, to: { lat: number; lng: number }) => {
+      // A test drive picks checkpoints; it never moves them.
+      if (testDriveOpen) return;
       const node = nodes.find((candidate) => candidate.node_id === nodeId);
       if (!node) return;
       setMoveDraft({
@@ -397,7 +449,7 @@ export default function ProjectConsolePage() {
         ),
       });
     },
-    [nodes],
+    [nodes, testDriveOpen],
   );
 
   /* ---------------------------------------------------------------------
@@ -585,6 +637,11 @@ export default function ProjectConsolePage() {
             <span className="truncate font-display text-sm font-bold text-text">
               {session.project_name}
             </span>
+            {isDemo ? (
+              <Badge tone="accent" mono>
+                Demo
+              </Badge>
+            ) : null}
             <DriverStatus connected={driverConnected} />
           </div>
         }
@@ -692,6 +749,13 @@ export default function ProjectConsolePage() {
           highlightedConnectionIds={agent.highlights.connectionIds}
           highlightedNodeIds={agent.highlights.nodeIds}
           showHover={!presentation}
+          onClickNode={
+            testDriveOpen
+              ? (node) => testDrive.current?.pick(node.node_id)
+              : undefined
+          }
+          pickMode={testDriveOpen}
+          picks={testDriveOpen ? picks : undefined}
         />
 
         {agent.highlights.caption ? (
@@ -717,6 +781,12 @@ export default function ProjectConsolePage() {
             onSelect={selectFromMap}
             onNodeMoved={moveFromMap}
             onPlace={openAddCheckpoint}
+            vehicleSinkRef={mapVehicle}
+            mode={{
+              testDrive: testDriveOpen,
+              start: testDriveOpen ? picks.start : null,
+              end: testDriveOpen ? picks.end : null,
+            }}
           />
         ) : null}
 
@@ -733,6 +803,19 @@ export default function ProjectConsolePage() {
                   >
                     Add checkpoint
                   </Button>
+                  {isDemo ? (
+                    <Button
+                      size="sm"
+                      variant={testDriveOpen ? "primary" : "secondary"}
+                      onClick={() => {
+                        setTestDriveOpen((open) => !open);
+                        setPicks({ start: null, end: null });
+                        setSelected(null);
+                      }}
+                    >
+                      Test drive
+                    </Button>
+                  ) : null}
                   <span className="hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm sm:inline">
                     {pluralise(nodes.length, "checkpoint")} ·{" "}
                     {pluralise(connections.length, "edge")}
@@ -754,7 +837,18 @@ export default function ProjectConsolePage() {
 
             <div className="flex items-end justify-between gap-4">
               {activeView === "graph" && !presentation ? <GraphLegend /> : <span />}
-              {selected ? (
+              {testDriveOpen && isDemo ? (
+                <TestDrivePanel
+                  ref={testDrive}
+                  apiKey={session.apiKey}
+                  nodes={nodes}
+                  connections={connections}
+                  geometry={geometry}
+                  onVehicle={showVehicle}
+                  onPicks={setPicks}
+                  onClose={() => setTestDriveOpen(false)}
+                />
+              ) : selected ? (
                 <ConnectionEditor
                   connection={selected}
                   nodes={nodes}
@@ -806,6 +900,8 @@ export default function ProjectConsolePage() {
           realtimeConnected={realtimeConnected}
           mapDriver={mapDriver}
           onMapDriverChange={setMapDriver}
+          isDemo={isDemo}
+          onDemoChange={changeDemo}
           onSignOut={signOut}
         />
 

@@ -25,6 +25,7 @@ const { places } = require("./places");
 const { launchRun, activeRun, getRun, answerConfirmation, cancelRun } = require("./runner.js");
 const { createApiClient } = require("./api.js");
 const restore = require("./restore.js");
+const { pickEffort } = require("./effort.js");
 const { getReport } = require("./report.js");
 
 const MAX_MESSAGE_LENGTH = 2000;
@@ -42,9 +43,10 @@ const ATTACHMENT_TYPES = {
 
 /** Checks attachments and turns them into Messages API content blocks, or says what is wrong. */
 function attachmentBlocks(list) {
-  if (list === undefined || list === null) return { blocks: [] };
+  if (list === undefined || list === null) return { blocks: [], kinds: [] };
   if (!Array.isArray(list) || list.length > MAX_ATTACHMENTS) return { error: `attachments must be a list of at most ${MAX_ATTACHMENTS}` };
   const blocks = [];
+  const kinds = [];
   for (const item of list) {
     const name = item && typeof item.name === "string" ? item.name.slice(0, 120) : "";
     const type = item && typeof item.type === "string" ? item.type : "";
@@ -55,6 +57,7 @@ function attachmentBlocks(list) {
     }
     const bytes = Math.floor((data.length * 3) / 4);
     if (bytes > rule.maxBytes) return { error: `"${name}" is larger than ${rule.maxBytes / 1024 / 1024} MB` };
+    kinds.push({ kind: rule.kind });
     if (rule.kind === "image") {
       blocks.push({ type: "text", text: `Attached image: ${name}` });
       blocks.push({ type: "image", source: { type: "base64", media_type: type, data } });
@@ -66,7 +69,7 @@ function attachmentBlocks(list) {
 ${text}` });
     }
   }
-  return { blocks };
+  return { blocks, kinds };
 }
 const HEARTBEAT_MS = 15000;
 
@@ -152,6 +155,10 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
     }
     const attached = attachmentBlocks(req.body.attachments);
     if (attached.error) return res.status(400).json({ error: attached.error });
+    const chosenEffort = req.body.effort === undefined ? "auto" : req.body.effort;
+    if (!["auto", "low", "medium", "high"].includes(chosenEffort)) {
+      return res.status(400).json({ error: "effort must be auto, low, medium or high" });
+    }
     if (activeRun(req.projectId)) {
       return res.status(409).json({ error: "The agent is already working on this project." });
     }
@@ -165,6 +172,7 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
       message: message.trim(),
       retry: req.body.retry === true,
       attachments: attached.blocks,
+      effort: pickEffort(message, attached.kinds, chosenEffort),
       emit: (event, data) => stream.send(event, data),
       db,
       statements,

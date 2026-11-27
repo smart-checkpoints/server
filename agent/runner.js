@@ -401,7 +401,7 @@ function requestParams(messages, run) {
     tools: [...definitions, ...webTools(run)],
     messages,
     thinking: { type: config.thinking },
-    output_config: { effort: config.effort },
+    output_config: { effort: run.effort.level },
     // Caches the tools, the system prompt and the conversation so far; each
     // loop turn then reads the prefix instead of paying for it again.
     cache_control: { type: "ephemeral" },
@@ -446,7 +446,7 @@ function describeApiError(err) {
  * Runs one operator message to completion. `emit(event, data)` streams to
  * the console. Never throws: every failure ends in `run.error`.
  */
-async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, retry, attachments = [], emit, db, statements }) {
+async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, retry, attachments = [], effort, emit, db, statements }) {
   const session = getOrCreateSession(projectId, sessionId);
   const controller = new AbortController();
   const run = {
@@ -462,6 +462,8 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, ret
     checkpointQueue: Promise.resolve(),
     webSearches: 0,
     webFetches: 0,
+    // The effort for this request: the operator's pick, or Auto's (effort.js).
+    effort: effort || { level: config.effort, chosen: "server", reason: "the server's default" },
     emit,
     db,
     statements,
@@ -484,6 +486,7 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, ret
     run_id: run.id,
     session_id: session.id,
     model: config.model,
+    effort: run.effort,
     limits: {
       tool_calls_per_run: config.maxToolCallsPerRun,
       turns_per_run: config.maxTurnsPerRun,

@@ -23,6 +23,9 @@ import ProjectGate from "@/components/console/ProjectGate";
 import SettingsPanel from "@/components/console/SettingsPanel";
 import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
+import AgentPanel from "@/components/console/agent/AgentPanel";
+import CursorLayer from "@/components/console/agent/CursorLayer";
+import { useAgent } from "@/components/console/agent/useAgent";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import Nav from "@/components/ui/Nav";
@@ -49,6 +52,9 @@ import type { BridgeSelection } from "@/lib/mapbridge";
 import type { ConsoleSocket } from "@/lib/realtime";
 import { connectProject } from "@/lib/realtime";
 import { clearSession, useConsoleSession } from "@/lib/session";
+
+/** A stable empty list, so the cursor layer is not re-run on every render. */
+const NO_ACTIONS: never[] = [];
 
 export default function ProjectConsolePage() {
   /* `undefined` is "not read yet", `null` is "read, and there is none". The
@@ -109,6 +115,25 @@ export default function ProjectConsolePage() {
   const canvas = useRef<GraphCanvasHandle>(null);
   const socket = useRef<ConsoleSocket | null>(null);
   const flashSeq = useRef(0);
+
+  /* Dispatch, the agent. Its cursors leave from the mark in its panel. */
+  const agent = useAgent(session?.project_id ?? 0, session?.apiKey ?? "");
+  const agentMark = useRef<HTMLSpanElement>(null);
+  const [presentation, setPresentation] = useState(false);
+  const cameraOf = useCallback(
+    (nodeId: number) => nodes.find((node) => node.node_id === nodeId)?.id_in_project,
+    [nodes],
+  );
+
+  /* Presentation mode scales the whole page's type, so it lives on <html>. */
+  useEffect(() => {
+    const root = document.documentElement;
+    if (presentation) root.dataset.presentation = "true";
+    else delete root.dataset.presentation;
+    return () => {
+      delete root.dataset.presentation;
+    };
+  }, [presentation]);
 
   /* ---------------------------------------------------------------------
      The first read, then the live channel
@@ -565,32 +590,37 @@ export default function ProjectConsolePage() {
         }
         action={
           <div className="flex items-center gap-2">
-            <ViewToggle
-              view={activeView}
-              onChange={openView}
-              mapAvailable={mapAvailable}
-              mapUnavailableReason={
-                mapDriver.status === "approved"
-                  ? "The approved map driver is not running."
-                  : mapDriver.pending_url
-                    ? "A map driver is waiting to be approved, under Project."
-                    : "No map driver has offered a map view for this project."
-              }
-            />
+            {!presentation ? (
+              <>
+                <ViewToggle
+                  view={activeView}
+                  onChange={openView}
+                  mapAvailable={mapAvailable}
+                  mapUnavailableReason={
+                    mapDriver.status === "approved"
+                      ? "The approved map driver is not running."
+                      : mapDriver.pending_url
+                        ? "A map driver is waiting to be approved, under Project."
+                        : "No map driver has offered a map view for this project."
+                  }
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    setShowSettings((open) => !open);
+                    setShowViolations(false);
+                    setShowDiagnostics(false);
+                  }}
+                >
+                  Project
+                </Button>
+              </>
+            ) : null}
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => {
-                setShowSettings((open) => !open);
-                setShowViolations(false);
-                setShowDiagnostics(false);
-              }}
-            >
-              Project
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
+              data-agent-target="quality"
               onClick={() => {
                 // Opening the panel is the "on demand" in "recompute on
                 // demand": what is on screen was true when it was fetched,
@@ -611,6 +641,7 @@ export default function ProjectConsolePage() {
             </Button>
             <Button
               size="sm"
+              data-agent-target="violations"
               onClick={() => {
                 setShowViolations((open) => !open);
                 setShowSettings(false);
@@ -628,7 +659,25 @@ export default function ProjectConsolePage() {
         }
       />
 
-      <div className="console-shell relative bg-bg">
+      <div className="console-shell flex bg-bg">
+        <AgentPanel
+          ref={agentMark}
+          projectId={session.project_id}
+          apiKey={session.apiKey}
+          info={agent.info}
+          turns={agent.turns}
+          busy={agent.busy}
+          thinking={agent.thinking}
+          cameraOf={cameraOf}
+          presentation={presentation}
+          onTogglePresentation={() => setPresentation((on) => !on)}
+          onSend={(message) => void agent.send(message)}
+          onCancel={agent.cancel}
+          onConfirm={agent.confirm}
+          onReset={agent.reset}
+        />
+
+        <div className="relative min-w-0 flex-1">
         <GraphCanvas
           ref={canvas}
           nodes={nodes}
@@ -640,7 +689,18 @@ export default function ProjectConsolePage() {
           onSelectConnection={setSelected}
           onDraftEdge={setDraft}
           onDraftMove={setMoveDraft}
+          highlightedConnectionIds={agent.highlights.connectionIds}
+          highlightedNodeIds={agent.highlights.nodeIds}
+          showHover={!presentation}
         />
+
+        {agent.highlights.caption ? (
+          <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center">
+            <span className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
+              {agent.highlights.caption}
+            </span>
+          </div>
+        ) : null}
 
         {mapMounted && mapDriver.url && mapDriver.origin ? (
           <MapView
@@ -664,22 +724,26 @@ export default function ProjectConsolePage() {
         <div className="pointer-events-none absolute inset-0 p-4">
           <div className="flex h-full flex-col justify-between">
             <div className="flex items-start justify-between gap-4">
-              <div className="pointer-events-auto flex items-center gap-2">
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => openAddCheckpoint(null)}
-                >
-                  Add checkpoint
-                </Button>
-                <span className="hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm sm:inline">
-                  {pluralise(nodes.length, "checkpoint")} ·{" "}
-                  {pluralise(connections.length, "edge")}
-                </span>
-              </div>
+              {!presentation ? (
+                <div className="pointer-events-auto flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => openAddCheckpoint(null)}
+                  >
+                    Add checkpoint
+                  </Button>
+                  <span className="hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm sm:inline">
+                    {pluralise(nodes.length, "checkpoint")} ·{" "}
+                    {pluralise(connections.length, "edge")}
+                  </span>
+                </div>
+              ) : (
+                <span />
+              )}
 
               {/* Framing and zooming are the graph's own; the map has its own. */}
-              {activeView === "graph" ? (
+              {activeView === "graph" && !presentation ? (
                 <CanvasControls
                   onFit={() => canvas.current?.fit()}
                   onZoomIn={() => canvas.current?.zoomBy(1.2)}
@@ -689,7 +753,7 @@ export default function ProjectConsolePage() {
             </div>
 
             <div className="flex items-end justify-between gap-4">
-              {activeView === "graph" ? <GraphLegend /> : <span />}
+              {activeView === "graph" && !presentation ? <GraphLegend /> : <span />}
               {selected ? (
                 <ConnectionEditor
                   connection={selected}
@@ -698,7 +762,7 @@ export default function ProjectConsolePage() {
                   onCancel={() => setSelected(null)}
                   onSave={saveEdge}
                 />
-              ) : activeView === "graph" ? (
+              ) : activeView === "graph" && !presentation ? (
                 <p className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
                   Drag between checkpoints to link · shift-drag to move one · F
                   to frame
@@ -708,7 +772,11 @@ export default function ProjectConsolePage() {
           </div>
         </div>
 
-        {loaded && nodes.length === 0 && activeView === "graph" ? (
+        {loaded &&
+        nodes.length === 0 &&
+        activeView === "graph" &&
+        !presentation &&
+        agent.turns.length === 0 ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
             <div className="pointer-events-auto max-w-md rounded-2xl border border-border bg-surface shadow-lg">
               <EmptyState
@@ -757,7 +825,17 @@ export default function ProjectConsolePage() {
           violations={violations}
           liveCount={liveViolations}
         />
+        </div>
       </div>
+
+      <CursorLayer
+        actions={agent.currentTurn?.actions ?? NO_ACTIONS}
+        subscribe={agent.subscribe}
+        canvas={canvas}
+        origin={agentMark}
+        leadMs={agent.info?.cursor_lead_ms ?? 700}
+        cameraOf={cameraOf}
+      />
 
       <NewConnectionDialog
         draft={draft}

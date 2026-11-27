@@ -24,6 +24,7 @@ const WebSocket = require("ws");
 const crypto = require("crypto");
 const { parseCoordinate, isValidLatLng } = require("./geo.js");
 const { analyseProject } = require("./diagnostics.js");
+const { mountAgent } = require("./agent");
 
 // Every coordinate entering the system is WGS84 degrees. Rejecting here is the
 // only thing standing between a typo and enforcement built on a wrong position.
@@ -1820,6 +1821,26 @@ app.get("/admin/projects", async (req, res) => {
   }
 });
 
+// --- Dispatch agent ---
+//
+// Lives in `agent/`. It changes the system only by calling the REST API above
+// over loopback, with the operator key the console sent, so every check and
+// every broadcast applies to it exactly as to the console.
+mountAgent({
+  app,
+  db,
+  statements,
+  authenticateAPIKey,
+  requireOwnProject,
+  apiBaseUrl: `http://${
+    host === "0.0.0.0" || host === "::" || host === "localhost"
+      ? "127.0.0.1"
+      : host.includes(":")
+        ? `[${host}]`
+        : host
+  }:${port}`,
+});
+
 // --- Socket.IO ---
 io.on("connection", (socket) => {
   console.log(`🔌 Socket connected: ${socket.id}`);
@@ -2101,6 +2122,7 @@ async function calculateViolation(carPlate, nodeId, sightingTime) {
       carPlate,
       carSpeed,
       sightingTime,
+      connection.connection_id,
       db,
     );
   }

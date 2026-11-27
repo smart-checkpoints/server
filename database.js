@@ -277,6 +277,17 @@ function migrateMapDriver(db) {
   ]);
 }
 
+/**
+ * Adds the edge a violation was measured on.
+ *
+ * No backfill. A violation row never recorded which edge it came from, and
+ * reconstructing it from sightings would be a guess presented as a fact. Old
+ * rows stay NULL; every violation recorded from here on carries its edge.
+ */
+function migrateViolationConnection(db) {
+  return addMissingColumns(db, "violations", [["connection_id", "INTEGER"]]);
+}
+
 function initializeDatabase(db) {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
@@ -290,6 +301,7 @@ function initializeDatabase(db) {
           .then(() => migrateRouteGeometry(db))
           .then(() => migrateEndpointsHash(db))
           .then(() => migrateMapDriver(db))
+          .then(() => migrateViolationConnection(db))
           .then(() => resolve(), reject);
       });
     });
@@ -362,12 +374,36 @@ function createTables(db) {
       FOREIGN KEY(last_sighting_node_id) REFERENCES nodes(node_id)
   )`);
 
+  // `connection_id` is the edge the violation was measured on. Nullable:
+  // rows recorded before it existed stay unattributed rather than guessed at.
   db.run(`CREATE TABLE IF NOT EXISTS violations (
       violation_id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER,
       car_plate TEXT,
       car_speed REAL,
       timestamp TEXT,
+      connection_id INTEGER,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id),
+      FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
+  )`);
+
+  // What the Dispatch agent did, and on whose request. Written by the agent
+  // module only, never edited, and read back by the console's audit tab.
+  db.run(`CREATE TABLE IF NOT EXISTS agent_actions (
+      action_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id     INTEGER NOT NULL,
+      run_id         TEXT NOT NULL,
+      session_id     TEXT NOT NULL,
+      call_id        TEXT NOT NULL,
+      user_request   TEXT NOT NULL,
+      tool           TEXT NOT NULL,
+      input          TEXT NOT NULL,
+      result         TEXT,
+      ok             INTEGER,
+      api_calls      TEXT,
+      confirmation   TEXT,
+      started_at     TEXT NOT NULL,
+      finished_at    TEXT,
       FOREIGN KEY(project_id) REFERENCES projects(project_id)
   )`);
 
@@ -561,17 +597,31 @@ const statements = {
    * @param {number} longitude WGS84 longitude in degrees, +/-180.
    */
   createNode: async (projectId, latitude, longitude, db) => {
-    const idInProject = await statements.getNextIdInProject(projectId, db);
-    const nodeId = await addEntry(
-      "nodes",
-      {
-        project_id: projectId,
-        id_in_project: idInProject,
-        latitude: latitude,
-        longitude: longitude,
-      },
-      db,
-    );
+    // The next index is read and written in one statement. As a SELECT
+    // followed by an INSERT, two creates arriving together both read the same
+    // MAX and both wrote it, and two checkpoints shared one `id_in_project` -
+    // the number every camera reports by. A transaction would not have helped:
+    // every caller shares this one connection, so both pairs of statements
+    // would have run inside the same transaction, interleaved.
+    const nodeId = await new Promise((resolve, reject) => {
+      db.run(
+        "INSERT INTO nodes (project_id, id_in_project, latitude, longitude) " +
+          "SELECT ?, COALESCE(MAX(id_in_project), -1) + 1, ?, ? " +
+          "FROM nodes WHERE project_id = ?",
+        [projectId, latitude, longitude, projectId],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.lastID);
+        },
+      );
+    });
+    const idInProject = await new Promise((resolve, reject) => {
+      db.get(
+        "SELECT id_in_project FROM nodes WHERE node_id = ?",
+        [nodeId],
+        (err, row) => (err ? reject(err) : resolve(row.id_in_project)),
+      );
+    });
     // Update node count
     await statements.incrementNodeCount(projectId, db);
     console.log(`Node ${nodeId} (id_in_project: ${idInProject})`);
@@ -618,13 +668,21 @@ const statements = {
     return connectionId;
   },
 
-  createViolation: async (projectId, carPlate, carSpeed, timestamp, db) => {
+  createViolation: async (
+    projectId,
+    carPlate,
+    carSpeed,
+    timestamp,
+    connectionId,
+    db,
+  ) => {
     return await addEntry(
       "violations",
       {
         project_id: projectId,
         car_plate: carPlate,
         car_speed: carSpeed,
+        connection_id: connectionId,
         // ISO 8601 UTC, the same form `traversals.timestamp` uses and the same
         // form the realtime `violation-added` event carries. Binding a Date
         // straight into this TEXT column made SQLite write "1787905380236.0",
@@ -1147,7 +1205,7 @@ const statements = {
   getProjectViolations: (projectId, db) => {
     return new Promise((resolve, reject) => {
       db.all(
-        "SELECT violation_id, car_plate, car_speed, timestamp FROM violations WHERE project_id = ? ORDER BY violation_id DESC",
+        "SELECT violation_id, car_plate, car_speed, timestamp, connection_id FROM violations WHERE project_id = ? ORDER BY violation_id DESC",
         [projectId],
         (err, rows) => {
           if (err) reject(err);
@@ -1352,6 +1410,64 @@ const statements = {
         function (err) {
           if (err) reject(err);
           else resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  insertAgentAction: (action, db) => {
+    return addEntry(
+      "agent_actions",
+      {
+        project_id: action.projectId,
+        run_id: action.runId,
+        session_id: action.sessionId,
+        call_id: action.callId,
+        user_request: action.userRequest,
+        tool: action.tool,
+        input: JSON.stringify(action.input),
+        started_at: new Date().toISOString(),
+      },
+      db,
+    );
+  },
+
+  finishAgentAction: (actionId, outcome, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "UPDATE agent_actions SET result = ?, ok = ?, api_calls = ?, " +
+          "confirmation = ?, finished_at = ? WHERE action_id = ?",
+        [
+          JSON.stringify(outcome.result ?? null),
+          outcome.ok ? 1 : 0,
+          JSON.stringify(outcome.apiCalls ?? []),
+          outcome.confirmation ?? null,
+          new Date().toISOString(),
+          actionId,
+        ],
+        (err) => (err ? reject(err) : resolve()),
+      );
+    });
+  },
+
+  listAgentActions: (projectId, limit, db) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        "SELECT action_id, run_id, session_id, call_id, user_request, tool, " +
+          "input, result, ok, api_calls, confirmation, started_at, finished_at " +
+          "FROM agent_actions WHERE project_id = ? ORDER BY action_id DESC LIMIT ?",
+        [projectId, limit],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(
+            (rows || []).map((row) => ({
+              ...row,
+              ok: row.ok === null ? null : row.ok === 1,
+              input: JSON.parse(row.input),
+              result: row.result === null ? null : JSON.parse(row.result),
+              api_calls: row.api_calls === null ? [] : JSON.parse(row.api_calls),
+            })),
+          );
         },
       );
     });

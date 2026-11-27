@@ -398,3 +398,149 @@ html::-webkit-scrollbar-track {
 .row-arrive {
   animation: row-arrive 1.4s cubic-bezier(0.22, 1, 0.36, 1);
 }
+
+/* ---------------------------------------------------------------------------
+   DISPATCH
+
+   The agent panel and the cursors that show its tool calls on the map. Same
+   curve as everything else; things fade and glide, nothing bounces.
+   --------------------------------------------------------------------------- */
+
+/* Presentation mode: a step up in type for 1920x1080 recording. Everything
+   sized in rem follows, the header and the shell height included. */
+html[data-presentation] {
+  font-size: 112.5%;
+}
+
+.agent-cursor {
+  will-change: transform;
+}
+
+/* The glyph's tip sits exactly on the point the cursor is at. */
+.agent-cursor-glyph {
+  position: absolute;
+  left: -3px;
+  top: -2px;
+  filter: drop-shadow(0 1px 1px rgb(255 255 255 / 0.9)) drop-shadow(0 2px 4px rgb(30 38 40 / 0.25));
+}
+
+.agent-cursor-ring {
+  position: absolute;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  border: 2px solid;
+  border-radius: 9999px;
+  opacity: 0;
+}
+
+/* The press when a cursor reaches what it is acting on. */
+.agent-cursor[data-arrived="1"] .agent-cursor-ring {
+  animation: agent-press 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* Holding while the call runs: a slow, quiet breath on the ring. */
+.agent-cursor[data-arrived="1"][data-status="measuring"] .agent-cursor-ring,
+.agent-cursor[data-arrived="1"][data-status="confirm"] .agent-cursor-ring {
+  animation: agent-hold 1.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes agent-press {
+  from {
+    opacity: 0.9;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes agent-hold {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+}
+
+/* The road being measured: the edge's own dashed "not measured yet" stroke,
+   moving, until the driver answers and the real edge replaces it. */
+.agent-measuring {
+  stroke-dasharray: 10 8;
+  animation: agent-dash 0.9s linear infinite;
+  transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes agent-dash {
+  to {
+    stroke-dashoffset: -18;
+  }
+}
+
+.agent-spin {
+  animation: agent-spin 0.9s linear infinite;
+}
+
+@keyframes agent-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.agent-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.agent-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 9999px;
+  background-color: var(--text-dim);
+  animation: agent-dot 1.2s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+.agent-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.agent-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes agent-dot {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+.agent-confirm {
+  animation: agent-rise 280ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes agent-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* A cursor near the right edge opens its label to the left. */
+.agent-cursor[data-flip="1"] .agent-cursor-label {
+  left: auto;
+  right: 0.75rem;
+}

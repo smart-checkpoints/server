@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import type { CheckpointNode, Connection } from "@/lib/api";
+import { houseEase } from "@/lib/ease";
 import { formatDistance, formatSpeed } from "@/lib/format";
 import {
   haversineMeters,
@@ -76,6 +77,25 @@ export type GraphCanvasHandle = {
    * putting the preview away.
    */
   clearMove: () => void;
+
+  /* The agent's view of the canvas. Points are in viewport (client) pixels,
+     so an overlay positioned over the whole window can use them directly.
+     All of them return null when there is nothing to point at yet. */
+
+  /** Where a coordinate is on screen. Creates the projection if none exists. */
+  latLngToClient: (lat: number, lng: number) => Point | null;
+  nodeToClient: (nodeId: number) => Point | null;
+  /** The midpoint of an edge as drawn, two-way offset included. */
+  edgeToClient: (connectionId: number) => Point | null;
+  /** Whether a coordinate is on screen with `margin` pixels to spare. */
+  isVisible: (lat: number, lng: number, margin?: number) => boolean;
+  /**
+   * Moves the camera, smoothly, to frame every checkpoint plus `extra`
+   * coordinates that are about to matter (where checkpoints will appear).
+   */
+  frame: (extra?: LatLng[], durationMs?: number) => void;
+  /** Called after every repaint: pan, zoom, camera moves, data changes. */
+  subscribe: (listener: () => void) => () => void;
 };
 
 type HoverInfo = {
@@ -113,7 +133,15 @@ type GraphCanvasProps = {
   onDraftEdge: (draft: EdgeDraft) => void;
   /** A checkpoint was dragged to a new position and wants confirming. */
   onDraftMove: (draft: MoveDraft) => void;
+  /** Edges and checkpoints the agent is pointing out. Display only. */
+  highlightedConnectionIds?: number[];
+  highlightedNodeIds?: number[];
+  /** Hover cards off, for screen recording. */
+  showHover?: boolean;
 };
+
+/** A stable empty list, so a missing prop does not repaint every render. */
+const EMPTY_IDS: number[] = [];
 
 /** How fast a congestion colour moves toward its new value, per frame. */
 const CONGESTION_LERP = 0.12;
@@ -145,6 +173,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onSelectConnection,
       onDraftEdge,
       onDraftMove,
+      highlightedConnectionIds = EMPTY_IDS,
+      highlightedNodeIds = EMPTY_IDS,
+      showHover = true,
     },
     ref,
   ) {
@@ -166,6 +197,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       congestionTargets,
       nodeWarnings,
       selectedConnectionId,
+      highlightedConnectionIds,
+      highlightedNodeIds,
     });
     data.current = {
       nodes,
@@ -173,7 +206,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       congestionTargets,
       nodeWarnings,
       selectedConnectionId,
+      highlightedConnectionIds,
+      highlightedNodeIds,
     };
+
+    /* Whoever is drawing over the canvas, told after each repaint. */
+    const listeners = useRef(new Set<() => void>());
+    /* The camera animation in flight, if any. */
+    const cameraFrame = useRef<number | null>(null);
 
     /* Animated values. These move every frame, so they never touch React
        state: a congestion ramp or a flash decaying at 60fps would otherwise
@@ -263,6 +303,32 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       return { x: (sx - panX) / zoom, y: (sy - panY) / zoom };
     }, []);
 
+    /** The view that frames `points` (world metres), or null with no room yet. */
+    const viewFor = useCallback((points: Point[]) => {
+      const { width, height } = size.current;
+      if (points.length === 0 || width === 0) return null;
+      const minX = Math.min(...points.map((p) => p.x));
+      const maxX = Math.max(...points.map((p) => p.x));
+      const minY = Math.min(...points.map((p) => p.y));
+      const maxY = Math.max(...points.map((p) => p.y));
+      const padding = NODE_RADIUS * 3.5;
+      const spanX = maxX - minX;
+      const spanY = maxY - minY;
+      const fitZoom =
+        spanX === 0 && spanY === 0
+          ? 1
+          : Math.min(
+              (width - padding * 2) / (spanX || 1),
+              (height - padding * 2) / (spanY || 1),
+            );
+      const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitZoom));
+      return {
+        zoom,
+        panX: width / 2 - ((minX + maxX) / 2) * zoom,
+        panY: height / 2 - ((minY + maxY) / 2) * zoom,
+      };
+    }, []);
+
     const fit = useCallback(() => {
       ensureProjection();
       const { width, height } = size.current;
@@ -319,13 +385,111 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
     useImperativeHandle(
       ref,
-      () => ({
-        fit,
-        zoomBy: (factor: number) =>
-          zoomAt(factor, size.current.width / 2, size.current.height / 2),
-        clearMove,
-      }),
-      [fit, zoomAt, clearMove],
+      () => {
+        const toClient = (world: Point): Point | null => {
+          const canvas = canvasRef.current;
+          if (!canvas) return null;
+          const rect = canvas.getBoundingClientRect();
+          const { panX, panY, zoom } = view.current;
+          return { x: rect.left + world.x * zoom + panX, y: rect.top + world.y * zoom + panY };
+        };
+        const projectLatLng = (lat: number, lng: number): Point => {
+          ensureProjection();
+          // An empty project has no projection until its first checkpoint;
+          // the first place the agent points at becomes the origin instead.
+          if (!projection.current) projection.current = makeProjection(lat, lng);
+          return projection.current.project(lat, lng);
+        };
+        const findNode = (nodeId: number) =>
+          data.current.nodes.find((node) => node.node_id === nodeId) ?? null;
+
+        return {
+          fit,
+          zoomBy: (factor: number) =>
+            zoomAt(factor, size.current.width / 2, size.current.height / 2),
+          clearMove,
+
+          latLngToClient: (lat, lng) => toClient(projectLatLng(lat, lng)),
+
+          nodeToClient: (nodeId) => {
+            const node = findNode(nodeId);
+            return node ? toClient(nodeXY(node)) : null;
+          },
+
+          edgeToClient: (connectionId) => {
+            const edge = data.current.connections.find((e) => e.connection_id === connectionId);
+            const from = edge && findNode(edge.from_node_id);
+            const to = edge && findNode(edge.to_node_id);
+            if (!edge || !from || !to) return null;
+            const a = nodeXY(from);
+            const b = nodeXY(to);
+            const length = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+            const twoWay = data.current.connections.some(
+              (e) => e.from_node_id === edge.to_node_id && e.to_node_id === edge.from_node_id,
+            );
+            const offset = twoWay ? EDGE_OFFSET / view.current.zoom : 0;
+            return toClient({
+              x: (a.x + b.x) / 2 + (-(b.y - a.y) / length) * offset,
+              y: (a.y + b.y) / 2 + ((b.x - a.x) / length) * offset,
+            });
+          },
+
+          isVisible: (lat, lng, margin = 60) => {
+            const canvas = canvasRef.current;
+            const point = toClient(projectLatLng(lat, lng));
+            if (!canvas || !point) return false;
+            const rect = canvas.getBoundingClientRect();
+            return (
+              point.x >= rect.left + margin &&
+              point.x <= rect.right - margin &&
+              point.y >= rect.top + margin &&
+              point.y <= rect.bottom - margin
+            );
+          },
+
+          frame: (extra = [], durationMs = 600) => {
+            const points = [
+              ...extra.map((p) => projectLatLng(p.lat, p.lng)),
+              ...data.current.nodes.map(nodeXY),
+            ];
+            const target = viewFor(points);
+            if (!target) return;
+            // Framing is now somebody's decision; the first-load fit must not
+            // undo it when the checkpoints arrive.
+            framed.current = true;
+            if (cameraFrame.current !== null) cancelAnimationFrame(cameraFrame.current);
+
+            const { width, height } = size.current;
+            const start = { ...view.current };
+            const centre = (v: typeof start) => ({
+              x: (width / 2 - v.panX) / v.zoom,
+              y: (height / 2 - v.panY) / v.zoom,
+            });
+            const c0 = centre(start);
+            const c1 = centre(target);
+            const t0 = performance.now();
+
+            const step = (now: number) => {
+              const k = houseEase(Math.min(1, (now - t0) / Math.max(1, durationMs)));
+              // Zoom moves geometrically and the centre linearly, so the
+              // camera glides rather than swooping.
+              const zoom = start.zoom * Math.pow(target.zoom / start.zoom, k);
+              const cx = c0.x + (c1.x - c0.x) * k;
+              const cy = c0.y + (c1.y - c0.y) * k;
+              view.current = { zoom, panX: width / 2 - cx * zoom, panY: height / 2 - cy * zoom };
+              paintNow();
+              cameraFrame.current = k < 1 ? requestAnimationFrame(step) : null;
+            };
+            cameraFrame.current = requestAnimationFrame(step);
+          },
+
+          subscribe: (listener) => {
+            listeners.current.add(listener);
+            return () => listeners.current.delete(listener);
+          },
+        };
+      },
+      [fit, zoomAt, clearMove, ensureProjection, nodeXY, viewFor, paintNow],
     );
 
     /* ---------------------------------------------------------------------
@@ -423,7 +587,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         paintNow();
       };
 
-      painter.current = () => paint(ctx, tokens);
+      painter.current = () => {
+        paint(ctx, tokens);
+        for (const listener of listeners.current) listener();
+      };
 
       const observer = new ResizeObserver(resize);
       observer.observe(wrap);
@@ -569,6 +736,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           const noRoute = edge.distance_status === "no-route";
           const ratio = ratios[edge.connection_id];
 
+          // An edge the agent is pointing out gets a wide accent underlay, so
+          // its own colour - which says whether it enforces - still shows.
+          if (data.current.highlightedConnectionIds.includes(edge.connection_id)) {
+            ctx.save();
+            ctx.strokeStyle = withAlpha(tokens.cyan, 0.3);
+            ctx.lineWidth = 16 / zoom;
+            ctx.lineCap = "round";
+            ctx.beginPath();
+            ctx.moveTo(startX, startY);
+            ctx.lineTo(tipX, tipY);
+            ctx.stroke();
+            ctx.restore();
+          }
+
           let color: string;
           // Status wins over congestion. An edge that cannot enforce must not
           // be painted as a working road by a ratio left over from before it
@@ -664,6 +845,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           const linking = state.linkFrom?.node_id === node.node_id;
           const pulse = pulses[node.id_in_project] ?? 0;
 
+          if (data.current.highlightedNodeIds.includes(node.node_id)) {
+            ctx.beginPath();
+            ctx.arc(point.x, point.y, nodeRadius + 8 / zoom, 0, Math.PI * 2);
+            ctx.fillStyle = withAlpha(tokens.cyan, 0.22);
+            ctx.fill();
+          }
+
           if (pulse > 0) {
             ctx.beginPath();
             ctx.arc(point.x, point.y, nodeRadius + (12 * pulse) / zoom, 0, Math.PI * 2);
@@ -709,7 +897,15 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     /* Redraw whenever the data behind the frame changes. */
     useEffect(() => {
       paintNow();
-    }, [nodes, connections, nodeWarnings, selectedConnectionId, paintNow]);
+    }, [
+      nodes,
+      connections,
+      nodeWarnings,
+      selectedConnectionId,
+      highlightedConnectionIds,
+      highlightedNodeIds,
+      paintNow,
+    ]);
 
     /* New congestion figures do not snap: the colour walks to them. */
     useEffect(() => {
@@ -735,6 +931,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const onPointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
       const state = interaction.current;
       const { x, y } = localPoint(event);
+      // A hand on the canvas beats a camera move in flight.
+      if (cameraFrame.current !== null) {
+        cancelAnimationFrame(cameraFrame.current);
+        cameraFrame.current = null;
+      }
       const world = toWorld(x, y);
 
       // Capture keeps a drag alive when the pointer leaves the canvas. It
@@ -979,7 +1180,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           onContextMenu={(event) => event.preventDefault()}
         />
 
-        {hover ? (
+        {hover && showHover ? (
           <div
             className="pointer-events-none absolute z-20 max-w-64 rounded-xl border border-border bg-surface px-3 py-2 shadow-md"
             style={{

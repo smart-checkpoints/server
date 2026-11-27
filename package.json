@@ -13,7 +13,10 @@
     "start": "node server.js",
     "dev": "node server.js",
     "console:dev": "npm run dev --workspace console",
-    "console:lint": "npm run lint --workspace console"
+    "console:lint": "npm run lint --workspace console",
+    "demo:1": "node agent/demo/seed.js empty",
+    "demo:2": "node agent/demo/seed.js network",
+    "demo:3": "node agent/demo/seed.js network"
   },
   "keywords": [
     "average speed enforcement",
@@ -27,6 +30,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "socket.io": "^4.8.3",

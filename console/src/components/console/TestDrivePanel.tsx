@@ -25,6 +25,7 @@ import {
   describeReason,
   planRoute,
   positionAt,
+  profileAt,
   randomDemoPlate,
   timetable,
   type Timetable,
@@ -79,6 +80,9 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
     const [startId, setStartId] = useState<number | null>(null);
     const [endId, setEndId] = useState<number | null>(null);
     const [speed, setSpeed] = useState(80);
+    const [kangaroo, setKangaroo] = useState(false);
+    const [cameraSpeed, setCameraSpeed] = useState(40);
+    const [liveSpeed, setLiveSpeed] = useState(0);
     const [plate, setPlate] = useState<string | null>(null);
     const [table, setTable] = useState<Timetable | null>(null);
     const [outcomes, setOutcomes] = useState<Outcome[]>([]);
@@ -140,6 +144,8 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
             if (planned) {
               const limit = Math.max(...planned.hops.map((hop) => hop.connection.speed_limit));
               setSpeed(Math.min(MAX_SPEED, Math.round((limit + 20) / 10) * 10));
+              const lowest = Math.min(...planned.hops.map((hop) => hop.connection.speed_limit));
+              setCameraSpeed(Math.max(MIN_SPEED, Math.round((lowest - 20) / 5) * 5));
             }
             return;
           }
@@ -164,7 +170,11 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
       cancelled.current = false;
 
       const carPlate = randomDemoPlate();
-      const plan = timetable(route, speed, Date.now());
+      const plan = timetable(
+        route,
+        { cruiseKmh: speed, kangaroo, cameraKmh: cameraSpeed },
+        Date.now(),
+      );
       const track = buildTrack(route, geometry);
       const checkpoints = [route.hops[0].from, ...route.hops.map((hop) => hop.to)];
 
@@ -203,7 +213,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
         });
       };
 
-      const vehicleAt = (fraction: number): VehicleFrame => {
+      const vehicleAt = (fraction: number, kmh: number): VehicleFrame => {
         const at = positionAt(track, fraction);
         const hop = route.hops[at.hopIndex];
         return {
@@ -211,7 +221,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
           toNodeId: hop.to.node_id,
           t: at.hopT,
           position: at.position,
-          label: `${carPlate} · ${speed} km/h`,
+          label: `${carPlate} · ${Math.round(kmh)} km/h`,
           violation,
         };
       };
@@ -223,7 +233,10 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
 
       const step = (now: number) => {
         if (cancelled.current) return;
-        const fraction = playMs <= 0 ? 1 : Math.min(1, (now - began) / playMs);
+        const played = playMs <= 0 ? 1 : Math.min(1, (now - began) / playMs);
+        const at = profileAt(plan.profile, played * plan.realSeconds);
+        const fraction =
+          played >= 1 || route.meters === 0 ? 1 : Math.min(1, at.meters / route.meters);
         while (
           reported < plan.fractions.length &&
           plan.fractions[reported] <= fraction + 1e-9
@@ -231,23 +244,24 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
           report(reported);
           reported += 1;
         }
-        onVehicle(vehicleAt(fraction));
+        onVehicle(vehicleAt(fraction, at.kmh));
         setProgress(fraction);
+        setLiveSpeed(at.kmh);
 
-        if (fraction < 1) {
+        if (played < 1) {
           frame.current = requestAnimationFrame(step);
           return;
         }
         frame.current = null;
         void chain.then(() => {
           if (cancelled.current) return;
-          onVehicle(vehicleAt(1));
+          onVehicle(vehicleAt(1, plan.passKmh[plan.passKmh.length - 1]));
           setPhase("done");
         });
       };
 
       frame.current = requestAnimationFrame(step);
-    }, [route, speed, geometry, apiKey, onVehicle, stop]);
+    }, [route, speed, kangaroo, cameraSpeed, geometry, apiKey, onVehicle, stop]);
 
     const close = () => {
       stop();
@@ -277,7 +291,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
               ? "Choose a speed, then press Drive"
               : "No road leads there · click another checkpoint"
             : phase === "driving"
-              ? `Driving ${plate ?? ""} at ${speed} km/h · reporting each checkpoint to the server`
+              ? `Driving ${plate ?? ""} at ${Math.round(liveSpeed)} km/h${kangaroo ? " · kangaroo" : ""} · reporting each checkpoint to the server`
               : violations > 0
                 ? `Done · the server recorded ${violations} violation${violations === 1 ? "" : "s"}`
                 : "Done · the server recorded no violation";
@@ -375,6 +389,43 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
                       onChange={(event) => setSpeed(Number(event.target.value))}
                       className="mt-2 w-full accent-[var(--color-cyan)]"
                     />
+
+                    <label className="mt-4 flex cursor-pointer items-center justify-between gap-3">
+                      <span>
+                        <span className="block font-mono text-xs font-semibold uppercase tracking-[0.14em] text-text-dim">
+                          Kangaroo driving
+                        </span>
+                        <span className="block text-xs text-text-dim">
+                          Brakes before every camera, speeds up between them.
+                        </span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={kangaroo}
+                        onChange={(event) => setKangaroo(event.target.checked)}
+                        className="h-4 w-4 accent-[var(--color-cyan)]"
+                      />
+                    </label>
+
+                    {kangaroo ? (
+                      <div className="mt-3">
+                        <label className="flex items-baseline justify-between font-mono text-xs font-semibold uppercase tracking-[0.14em] text-text-dim">
+                          Speed at cameras
+                          <span className="text-base text-text">
+                            {Math.min(cameraSpeed, speed)} km/h
+                          </span>
+                        </label>
+                        <input
+                          type="range"
+                          min={MIN_SPEED}
+                          max={MAX_SPEED}
+                          step={5}
+                          value={cameraSpeed}
+                          onChange={(event) => setCameraSpeed(Number(event.target.value))}
+                          className="mt-2 w-full accent-[var(--color-cyan)]"
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -387,7 +438,9 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
                       />
                     </div>
                     <p className="font-mono text-xs text-text-dim">
-                      {plate} · {speed} km/h · real trip{" "}
+                      {plate} · now {Math.round(liveSpeed)} km/h · cruise {speed} km/h
+                      {kangaroo ? ` · kangaroo, ${Math.min(cameraSpeed, speed)} at cameras` : ""}
+                      {" "}· real trip{" "}
                       {Math.round(table.realSeconds)} s · time-lapse ×
                       {table.timeLapse.toFixed(1)}
                     </p>
@@ -399,6 +452,7 @@ const TestDrivePanel = forwardRef<TestDriveHandle, TestDrivePanelProps>(
                           to={hop.to.id_in_project}
                           meters={hop.meters}
                           limit={hop.connection.speed_limit}
+                          passKmh={table.passKmh[index + 1]}
                           outcome={outcomes[index + 1] ?? null}
                         />
                       ))}
@@ -446,12 +500,15 @@ function HopRow({
   to,
   meters,
   limit,
+  passKmh,
   outcome,
 }: {
   from: number;
   to: number;
   meters: number;
   limit: number;
+  /** How fast the car went past the camera at the end of this hop. */
+  passKmh: number;
   outcome: Outcome;
 }) {
   let verdict: React.ReactNode = (
@@ -486,6 +543,7 @@ function HopRow({
         <span className="text-text-dim">
           {" "}
           · {formatDistance(meters)} · limit {formatSpeed(limit)}
+          {outcome ? ` · passed camera at ${formatSpeed(passKmh)}` : ""}
         </span>
       </span>
       {verdict}

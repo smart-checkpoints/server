@@ -187,6 +187,150 @@ export function positionAt(track: Track, fraction: number): TrackPosition {
 }
 
 /* -------------------------------------------------------------------------
+   The driver: a speed for every metre of the trip
+   ------------------------------------------------------------------------- */
+
+export type DriverOptions = {
+  /** The speed the driver holds on an open road. */
+  cruiseKmh: number;
+  /**
+   * Kangaroo driving: brake hard to `cameraKmh` before every checkpoint, pass
+   * it at that speed, then floor it back up to cruise once past.
+   */
+  kangaroo: boolean;
+  cameraKmh: number;
+};
+
+/** The drive sampled along its length: distance, real time and speed. */
+export type SpeedProfile = {
+  meters: Float64Array;
+  seconds: Float64Array;
+  kmh: Float64Array;
+};
+
+/** How long, either side of a checkpoint, a kangaroo driver holds camera speed. */
+const CAMERA_HOLD_METERS = 25;
+
+/** A small seeded random, so one drive's wobble is the same all the way. */
+function seeded(seed: number) {
+  let x = seed >>> 0 || 1;
+  return () => {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    return (x >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * How fast the car goes at every point of the trip.
+ *
+ * A human driver, not a cruise control: the speed drifts a few per cent
+ * around cruise, and every change of speed is limited by how hard the car can
+ * accelerate and brake. The car passes the first and last checkpoints rolling,
+ * the way a camera sees real traffic. A kangaroo driver also has a target of
+ * `cameraKmh` around each checkpoint, and accelerates and brakes harder.
+ */
+export function speedProfile(
+  route: Route,
+  options: DriverOptions,
+  seed = Date.now(),
+): SpeedProfile {
+  const total = route.meters;
+  const count = Math.max(2, Math.min(20000, Math.ceil(total / 2)) + 1);
+  const ds = total / (count - 1);
+  const random = seeded(seed);
+
+  const cruise = Math.max(1, options.cruiseKmh) / 3.6;
+  const camera = Math.max(1, Math.min(options.cameraKmh, options.cruiseKmh)) / 3.6;
+  const accel = options.kangaroo ? 3.2 : 1.8; // m/s²
+  const brake = options.kangaroo ? 5.5 : 2.8; // m/s²
+
+  // Two slow waves of a few per cent: the foot is never quite still.
+  const waves = [
+    { amp: 0.035, length: 700 + random() * 600, phase: random() * Math.PI * 2 },
+    { amp: 0.02, length: 220 + random() * 200, phase: random() * Math.PI * 2 },
+  ];
+
+  const cameras = [0];
+  for (const hop of route.hops) cameras.push(cameras[cameras.length - 1] + hop.meters);
+
+  const meters = new Float64Array(count);
+  const v = new Float64Array(count);
+  let next = 0;
+  for (let i = 0; i < count; i += 1) {
+    const s = i * ds;
+    meters[i] = s;
+    let target = cruise;
+    for (const w of waves) target *= 1 + w.amp * Math.sin((2 * Math.PI * s) / w.length + w.phase);
+    if (options.kangaroo) {
+      while (next < cameras.length - 1 && cameras[next] < s - CAMERA_HOLD_METERS) next += 1;
+      if (Math.abs(cameras[next] - s) <= CAMERA_HOLD_METERS) target = Math.min(target, camera);
+    }
+    v[i] = target;
+  }
+
+  // The car cannot change speed faster than its engine and brakes allow.
+  for (let i = 1; i < count; i += 1) {
+    v[i] = Math.min(v[i], Math.sqrt(v[i - 1] ** 2 + 2 * accel * ds));
+  }
+  for (let i = count - 2; i >= 0; i -= 1) {
+    v[i] = Math.min(v[i], Math.sqrt(v[i + 1] ** 2 + 2 * brake * ds));
+  }
+
+  const seconds = new Float64Array(count);
+  const kmh = new Float64Array(count);
+  kmh[0] = v[0] * 3.6;
+  for (let i = 1; i < count; i += 1) {
+    seconds[i] = seconds[i - 1] + (2 * ds) / (v[i - 1] + v[i]);
+    kmh[i] = v[i] * 3.6;
+  }
+  return { meters, seconds, kmh };
+}
+
+/** Where the driver is, and how fast, `seconds` into the real trip. */
+export function profileAt(
+  profile: SpeedProfile,
+  seconds: number,
+): { meters: number; kmh: number } {
+  const { meters, kmh } = profile;
+  const times = profile.seconds;
+  const last = times.length - 1;
+  if (seconds <= 0) return { meters: 0, kmh: kmh[0] };
+  if (seconds >= times[last]) return { meters: meters[last], kmh: kmh[last] };
+  let lo = 0;
+  let hi = last;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (times[mid] <= seconds) lo = mid;
+    else hi = mid;
+  }
+  const span = times[hi] - times[lo];
+  const k = span === 0 ? 0 : (seconds - times[lo]) / span;
+  return {
+    meters: meters[lo] + (meters[hi] - meters[lo]) * k,
+    kmh: kmh[lo] + (kmh[hi] - kmh[lo]) * k,
+  };
+}
+
+function secondsAtMeters(profile: SpeedProfile, at: number): number {
+  const { meters, seconds } = profile;
+  const last = meters.length - 1;
+  if (at <= 0) return 0;
+  if (at >= meters[last]) return seconds[last];
+  let lo = 0;
+  let hi = last;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (meters[mid] <= at) lo = mid;
+    else hi = mid;
+  }
+  const span = meters[hi] - meters[lo];
+  const k = span === 0 ? 0 : (at - meters[lo]) / span;
+  return seconds[lo] + (seconds[hi] - seconds[lo]) * k;
+}
+
+/* -------------------------------------------------------------------------
    The timetable
    ------------------------------------------------------------------------- */
 
@@ -195,6 +339,11 @@ export type Timetable = {
   sightings: string[];
   /** Fraction of the trip at which each checkpoint is passed. */
   fractions: number[];
+  /** The speed the car is doing as it passes each checkpoint, km/h. */
+  passKmh: number[];
+  /** The average speed over each hop, km/h: what the server should find. */
+  hopAverageKmh: number[];
+  profile: SpeedProfile;
   realSeconds: number;
   playSeconds: number;
   /** How much faster than real time the drive is played. */
@@ -202,30 +351,40 @@ export type Timetable = {
 };
 
 /**
- * When the car passes each checkpoint at a steady `speedKmh`.
+ * When the car passes each checkpoint, driven by `options`.
  *
  * Backdated: the last checkpoint is passed at `now`, so no sighting the
  * server is sent is ever in the future. Played back compressed to between 4
  * and 10 seconds, and the panel says by how much.
  */
-export function timetable(route: Route, speedKmh: number, now: number): Timetable {
-  const metresPerSecond = speedKmh / 3.6;
-  const realSeconds = route.meters / metresPerSecond;
+export function timetable(route: Route, options: DriverOptions, now: number): Timetable {
+  const profile = speedProfile(route, options);
+  const realSeconds = profile.seconds[profile.seconds.length - 1];
   const start = now - realSeconds * 1000;
 
   const sightings = [new Date(start).toISOString()];
   const fractions = [0];
+  const passKmh = [profileAt(profile, 0).kmh];
+  const hopAverageKmh: number[] = [];
   let driven = 0;
+  let previous = 0;
   for (const hop of route.hops) {
     driven += hop.meters;
-    sightings.push(new Date(start + (driven / metresPerSecond) * 1000).toISOString());
+    const at = secondsAtMeters(profile, driven);
+    sightings.push(new Date(start + at * 1000).toISOString());
     fractions.push(route.meters === 0 ? 1 : driven / route.meters);
+    passKmh.push(profileAt(profile, at).kmh);
+    hopAverageKmh.push(at - previous > 0 ? (hop.meters / (at - previous)) * 3.6 : 0);
+    previous = at;
   }
 
   const playSeconds = Math.min(realSeconds, Math.max(4, Math.min(10, realSeconds / 10)));
   return {
     sightings,
     fractions,
+    passKmh,
+    hopAverageKmh,
+    profile,
     realSeconds,
     playSeconds,
     timeLapse: playSeconds === 0 ? 1 : realSeconds / playSeconds,

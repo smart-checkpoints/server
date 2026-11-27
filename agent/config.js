@@ -52,6 +52,11 @@ const config = {
   maxToolCallsPerSession: int("AGENT_MAX_TOOL_CALLS_PER_SESSION", 100, 1, 2000),
   sessionIdleMs: int("AGENT_SESSION_IDLE_MINUTES", 60, 1, 24 * 60) * 60 * 1000,
   confirmTimeoutMs: int("AGENT_CONFIRM_TIMEOUT_SECONDS", 120, 10, 3600) * 1000,
+
+  // Anthropic's server-side web search and fetch, capped per run (one
+  // operator message). 0 turns a tool off.
+  webSearchPerRun: int("AGENT_WEB_SEARCHES_PER_RUN", 3, 0, 20),
+  webFetchesPerRun: int("AGENT_WEB_FETCHES_PER_RUN", 2, 0, 20),
 };
 
 module.exports = { config };

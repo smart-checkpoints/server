@@ -94,6 +94,8 @@ export type GraphCanvasHandle = {
    * coordinates that are about to matter (where checkpoints will appear).
    */
   frame: (extra?: LatLng[], durationMs?: number) => void;
+  /** Moves the camera, smoothly, to frame only these coordinates. */
+  focus: (points: LatLng[], durationMs?: number) => void;
   /** Called after every repaint: pan, zoom, camera moves, data changes. */
   subscribe: (listener: () => void) => () => void;
   /**
@@ -418,6 +420,39 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     useImperativeHandle(
       ref,
       () => {
+        // Moves the camera, smoothly, so every one of `points` is in view.
+        function glide(points: Point[], durationMs: number) {
+            const target = viewFor(points);
+            if (!target) return;
+            // Framing is now somebody's decision; the first-load fit must not
+            // undo it when the checkpoints arrive.
+            framed.current = true;
+            if (cameraFrame.current !== null) cancelAnimationFrame(cameraFrame.current);
+
+            const { width, height } = size.current;
+            const start = { ...view.current };
+            const centre = (v: typeof start) => ({
+              x: (width / 2 - v.panX) / v.zoom,
+              y: (height / 2 - v.panY) / v.zoom,
+            });
+            const c0 = centre(start);
+            const c1 = centre(target);
+            const t0 = performance.now();
+
+            const step = (now: number) => {
+              const k = houseEase(Math.min(1, (now - t0) / Math.max(1, durationMs)));
+              // Zoom moves geometrically and the centre linearly, so the
+              // camera glides rather than swooping.
+              const zoom = start.zoom * Math.pow(target.zoom / start.zoom, k);
+              const cx = c0.x + (c1.x - c0.x) * k;
+              const cy = c0.y + (c1.y - c0.y) * k;
+              view.current = { zoom, panX: width / 2 - cx * zoom, panY: height / 2 - cy * zoom };
+              paintNow();
+              cameraFrame.current = k < 1 ? requestAnimationFrame(step) : null;
+            };
+            cameraFrame.current = requestAnimationFrame(step);
+        }
+
         const toClient = (world: Point): Point | null => {
           const canvas = canvasRef.current;
           if (!canvas) return null;
@@ -484,39 +519,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           },
 
           frame: (extra = [], durationMs = 600) => {
-            const points = [
-              ...extra.map((p) => projectLatLng(p.lat, p.lng)),
-              ...data.current.nodes.map(nodeXY),
-            ];
-            const target = viewFor(points);
-            if (!target) return;
-            // Framing is now somebody's decision; the first-load fit must not
-            // undo it when the checkpoints arrive.
-            framed.current = true;
-            if (cameraFrame.current !== null) cancelAnimationFrame(cameraFrame.current);
+            glide(
+              [...extra.map((p) => projectLatLng(p.lat, p.lng)), ...data.current.nodes.map(nodeXY)],
+              durationMs,
+            );
+          },
 
-            const { width, height } = size.current;
-            const start = { ...view.current };
-            const centre = (v: typeof start) => ({
-              x: (width / 2 - v.panX) / v.zoom,
-              y: (height / 2 - v.panY) / v.zoom,
-            });
-            const c0 = centre(start);
-            const c1 = centre(target);
-            const t0 = performance.now();
-
-            const step = (now: number) => {
-              const k = houseEase(Math.min(1, (now - t0) / Math.max(1, durationMs)));
-              // Zoom moves geometrically and the centre linearly, so the
-              // camera glides rather than swooping.
-              const zoom = start.zoom * Math.pow(target.zoom / start.zoom, k);
-              const cx = c0.x + (c1.x - c0.x) * k;
-              const cy = c0.y + (c1.y - c0.y) * k;
-              view.current = { zoom, panX: width / 2 - cx * zoom, panY: height / 2 - cy * zoom };
-              paintNow();
-              cameraFrame.current = k < 1 ? requestAnimationFrame(step) : null;
-            };
-            cameraFrame.current = requestAnimationFrame(step);
+          focus: (points, durationMs = 600) => {
+            glide(points.map((p) => projectLatLng(p.lat, p.lng)), durationMs);
           },
 
           subscribe: (listener) => {

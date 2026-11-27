@@ -27,11 +27,18 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 const CURSOR_TOOLS = new Set([
   "create_checkpoint",
   "create_edge",
+  "split_edge",
+  "delete_edge",
+  "delete_checkpoint",
   "set_speed_limit",
   "move_checkpoint_by",
   "move_checkpoint_to",
   "get_violation_summary",
+  "get_violations",
   "get_diagnostics",
+  "frame_map",
+  "switch_view",
+  "open_panel",
 ]);
 
 let client = null;
@@ -260,16 +267,57 @@ function toolResult(toolUseId, result, isError) {
   };
 }
 
+/**
+ * Web searches and fetches run on Anthropic's side, inside the model's turn.
+ * They change nothing here, but they belong in the trace like every other
+ * call, and they count against the run's web budget.
+ */
+function reportServerTools(run, content) {
+  for (const block of content) {
+    if (block.type !== "server_tool_use") continue;
+    const result = content.find((b) => b.type !== "server_tool_use" && b.tool_use_id === block.id);
+    if (block.name === "web_search") run.webSearches += 1;
+    if (block.name === "web_fetch") run.webFetches += 1;
+    let summary = { note: "No result returned." };
+    let ok = false;
+    if (result && Array.isArray(result.content)) {
+      ok = true;
+      summary = { results: result.content.filter((r) => r.type === "web_search_result").map((r) => ({ title: r.title, url: r.url })) };
+    } else if (result && result.content && result.content.type === "web_fetch_result") {
+      ok = true;
+      summary = { url: result.content.url, title: result.content.content && result.content.content.title };
+    } else if (result && result.content && result.content.error_code) {
+      summary = { error: `${block.name} failed: ${result.content.error_code}` };
+    } else if (result) {
+      // Code execution filtering search results: its output is the model's own working.
+      ok = true;
+      summary = { note: `${result.type.replace(/_/g, " ")} returned` };
+    }
+    run.emit("tool.started", { call_id: block.id, tool: block.name, input: block.input || {}, lane: 0, target: null });
+    run.emit("tool.finished", { call_id: block.id, tool: block.name, ok, result: summary, api_calls: [], ms: 0 });
+  }
+}
+
 /* -------------------------------------------------------------------------
    The loop
    ------------------------------------------------------------------------- */
 
-function requestParams(messages) {
+/** The web tools still allowed in this run, as API tool definitions. */
+function webTools(run) {
+  const tools = [];
+  const searches = config.webSearchPerRun - run.webSearches;
+  const fetches = config.webFetchesPerRun - run.webFetches;
+  if (searches > 0) tools.push({ type: "web_search_20260318", name: "web_search", max_uses: searches });
+  if (fetches > 0) tools.push({ type: "web_fetch_20260318", name: "web_fetch", max_uses: fetches, max_content_tokens: 8000 });
+  return tools;
+}
+
+function requestParams(messages, run) {
   return {
     model: config.model,
     max_tokens: config.maxTokens,
     system: SYSTEM_PROMPT,
-    tools: definitions,
+    tools: [...definitions, ...webTools(run)],
     messages,
     thinking: { type: config.thinking },
     output_config: { effort: config.effort },
@@ -282,10 +330,32 @@ function requestParams(messages) {
   };
 }
 
+/** Overloaded, rate limited, a server error or a dropped connection: worth another try. */
+function isTransient(err) {
+  if (err instanceof Anthropic.APIConnectionError && !(err instanceof Anthropic.APIUserAbortError)) return true;
+  if (!(err instanceof Anthropic.APIError)) return false;
+  const status = err.status;
+  if (status === 429 || status === 529 || (typeof status === "number" && status >= 500)) return true;
+  // Overload reported inside an open stream arrives without an HTTP status.
+  return /overloaded/i.test(String(err.message || ""));
+}
+
+const RETRY_WAITS_MS = [2000, 5000, 12000];
+
+/** How long the API asked us to wait, if it said, capped so a demo never stalls for long. */
+function retryAfterMs(err, fallback) {
+  const header = err && err.headers && (typeof err.headers.get === "function" ? err.headers.get("retry-after") : err.headers["retry-after"]);
+  const seconds = Number(header);
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds * 1000, 20000) : fallback;
+}
+
 function describeApiError(err) {
   if (err instanceof Anthropic.AuthenticationError) return "The agent's Anthropic API key was rejected.";
   if (err instanceof Anthropic.PermissionDeniedError) return "The agent's API key is not allowed to use this model.";
   if (err instanceof Anthropic.RateLimitError) return "The agent is rate limited right now. Try again in a minute.";
+  if (err instanceof Anthropic.APIError && (err.status === 529 || /overloaded/i.test(String(err.message || "")))) {
+    return "The model is overloaded right now, and kept being overloaded after a few tries. Try again shortly.";
+  }
   if (err instanceof Anthropic.APIConnectionError) return "The agent could not reach the Anthropic API.";
   if (err instanceof Anthropic.APIError) return `The Anthropic API returned an error (${err.status}).`;
   return "The agent stopped because of an unexpected error.";
@@ -295,7 +365,7 @@ function describeApiError(err) {
  * Runs one operator message to completion. `emit(event, data)` streams to
  * the console. Never throws: every failure ends in `run.error`.
  */
-async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emit, db, statements }) {
+async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, retry, emit, db, statements }) {
   const session = getOrCreateSession(projectId, sessionId);
   const controller = new AbortController();
   const run = {
@@ -309,6 +379,8 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emi
     signal: controller.signal,
     confirmations: new Map(),
     checkpointQueue: Promise.resolve(),
+    webSearches: 0,
+    webFetches: 0,
     emit,
     db,
     statements,
@@ -337,7 +409,16 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emi
     },
   });
 
-  session.messages.push({ role: "user", content: message });
+  // A retry after a failed run: some of the request may already be done, and
+  // the model is told so rather than being sent the same words again.
+  session.messages.push({
+    role: "user",
+    content: retry
+      ? `(The previous attempt at this request stopped with an error before it finished. Some of it may already be done: check the network first, then finish only what is left.)
+
+${message}`
+      : message,
+  });
 
   const stop = (kind, used, limit) => {
     emit("run.limit", { kind, used, limit });
@@ -365,29 +446,44 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emi
         thinkingOpen = false;
       };
 
-      const blockTypes = new Map();
-      const stream = anthropic().beta.messages.stream(requestParams(session.messages), {
-        signal: run.signal,
-      });
-      stream.on("streamEvent", (event) => {
-        if (event.type === "content_block_start") {
-          const block = event.content_block;
-          blockTypes.set(event.index, block.type);
-          if (block.type !== "thinking" && block.type !== "redacted_thinking") closeThinking();
-          if (block.type === "tool_use") {
-            emit("tool.pending", { call_id: block.id, tool: block.name });
-          }
-        }
-      });
-      stream.on("text", (delta) => emit("text.delta", { text: delta }));
-      // With `between_tools` these are the short progress notes the model
-      // writes between tool calls; with `adaptive` and the default display
-      // they are empty.
-      stream.on("thinking", (delta) => {
-        if (delta) emit("note.delta", { text: delta });
-      });
+      let reply;
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          const blockTypes = new Map();
+          const stream = anthropic().beta.messages.stream(requestParams(session.messages, run), {
+            signal: run.signal,
+          });
+          stream.on("streamEvent", (event) => {
+            if (event.type === "content_block_start") {
+              const block = event.content_block;
+              blockTypes.set(event.index, block.type);
+              if (block.type !== "thinking" && block.type !== "redacted_thinking") closeThinking();
+              if (block.type === "tool_use" || block.type === "server_tool_use") {
+                emit("tool.pending", { call_id: block.id, tool: block.name });
+              }
+            }
+          });
+          stream.on("text", (delta) => emit("text.delta", { text: delta }));
+          // With `between_tools` these are the short progress notes the model
+          // writes between tool calls; with `adaptive` and the default display
+          // they are empty.
+          stream.on("thinking", (delta) => {
+            if (delta) emit("note.delta", { text: delta });
+          });
 
-      const reply = await stream.finalMessage();
+          reply = await stream.finalMessage();
+          break;
+        } catch (err) {
+          if (run.signal.aborted || !isTransient(err) || attempt >= RETRY_WAITS_MS.length) throw err;
+          const waitMs = retryAfterMs(err, RETRY_WAITS_MS[attempt]);
+          console.warn(`🤖 Anthropic API ${err.status || "connection"} error, retrying in ${waitMs} ms`);
+          // Whatever streamed before the failure is dropped by the console;
+          // tools only run from a finished message, so none ran.
+          emit("run.retrying", { attempt: attempt + 1, of: RETRY_WAITS_MS.length, wait_ms: waitMs, reason: describeApiError(err) });
+          await sleep(waitMs, run.signal);
+          if (run.signal.aborted) throw err;
+        }
+      }
       closeThinking();
       for (const key of Object.keys(usage)) usage[key] += (reply.usage && reply.usage[key]) || 0;
 
@@ -407,10 +503,22 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emi
       }
 
       session.messages.push({ role: "assistant", content: reply.content });
+      reportServerTools(run, reply.content);
+
+      // A long server-side tool turn (web search) can pause; it is resumed by
+      // sending the conversation back as it is.
+      if (reply.stop_reason === "pause_turn") {
+        consistentLength = session.messages.length;
+        continue;
+      }
       const toolUses = reply.content.filter((block) => block.type === "tool_use");
 
       if (toolUses.length === 0) {
+        // Only the text after the last tool block is the answer; text before
+        // a web search is the model saying what it is about to do.
+        const lastTool = reply.content.reduce((at, block, i) => (block.type === "text" ? at : i), -1);
         const text = reply.content
+          .slice(lastTool + 1)
           .filter((block) => block.type === "text")
           .map((block) => block.text)
           .join("")

@@ -550,3 +550,10 @@ html[data-presentation] {
   top: auto;
   bottom: 0.75rem;
 }
+
+/* The composer draws its focus on its outer box, so the textarea itself
+   shows none. */
+.sayes-input:focus-visible {
+  outline: none;
+  box-shadow: none;
+}

@@ -298,6 +298,30 @@ function migrateDemoFlag(db) {
   return addMissingColumns(db, "projects", [["is_demo", "INTEGER DEFAULT 0"]]);
 }
 
+/**
+ * Adds the per-project camera counter.
+ *
+ * `id_in_project` is the number every camera reports by, so a number that has
+ * ever been given out must never be given out again: a camera still in the
+ * field with a deleted checkpoint's number would otherwise start reporting
+ * into whatever new checkpoint inherited it. MAX+1 reuses the top number the
+ * moment the highest checkpoint is deleted; a counter that only goes up does
+ * not. Existing projects start counting after the highest number they hold.
+ */
+function migrateCameraCounter(db) {
+  return addMissingColumns(db, "projects", [["next_id_in_project", "INTEGER"]]).then(
+    () =>
+      new Promise((resolve, reject) => {
+        db.run(
+          "UPDATE projects SET next_id_in_project = COALESCE(" +
+            "(SELECT MAX(id_in_project) + 1 FROM nodes WHERE nodes.project_id = projects.project_id), 0) " +
+            "WHERE next_id_in_project IS NULL",
+          (err) => (err ? reject(err) : resolve()),
+        );
+      }),
+  );
+}
+
 function initializeDatabase(db) {
   return new Promise((resolve, reject) => {
     db.serialize(() => {
@@ -313,6 +337,7 @@ function initializeDatabase(db) {
           .then(() => migrateMapDriver(db))
           .then(() => migrateViolationConnection(db))
           .then(() => migrateDemoFlag(db))
+          .then(() => migrateCameraCounter(db))
           .then(() => resolve(), reject);
       });
     });
@@ -628,31 +653,26 @@ const statements = {
    * @param {number} longitude WGS84 longitude in degrees, +/-180.
    */
   createNode: async (projectId, latitude, longitude, db) => {
-    // The next index is read and written in one statement. As a SELECT
-    // followed by an INSERT, two creates arriving together both read the same
-    // MAX and both wrote it, and two checkpoints shared one `id_in_project` -
-    // the number every camera reports by. A transaction would not have helped:
-    // every caller shares this one connection, so both pairs of statements
-    // would have run inside the same transaction, interleaved.
-    const nodeId = await new Promise((resolve, reject) => {
-      db.run(
-        "INSERT INTO nodes (project_id, id_in_project, latitude, longitude) " +
-          "SELECT ?, COALESCE(MAX(id_in_project), -1) + 1, ?, ? " +
-          "FROM nodes WHERE project_id = ?",
-        [projectId, latitude, longitude, projectId],
-        function (err) {
+    // The number comes from the project's counter, taken and advanced in one
+    // statement, so two creates arriving together cannot get the same one,
+    // and a deleted checkpoint's number is never handed out again.
+    const idInProject = await new Promise((resolve, reject) => {
+      db.get(
+        "UPDATE projects SET next_id_in_project = COALESCE(next_id_in_project, 0) + 1 " +
+          "WHERE project_id = ? RETURNING next_id_in_project - 1 AS id",
+        [projectId],
+        (err, row) => {
           if (err) reject(err);
-          else resolve(this.lastID);
+          else if (!row) reject(new Error(`No project ${projectId}`));
+          else resolve(row.id);
         },
       );
     });
-    const idInProject = await new Promise((resolve, reject) => {
-      db.get(
-        "SELECT id_in_project FROM nodes WHERE node_id = ?",
-        [nodeId],
-        (err, row) => (err ? reject(err) : resolve(row.id_in_project)),
-      );
-    });
+    const nodeId = await addEntry(
+      "nodes",
+      { project_id: projectId, id_in_project: idInProject, latitude, longitude },
+      db,
+    );
     // Update node count
     await statements.incrementNodeCount(projectId, db);
     console.log(`Node ${nodeId} (id_in_project: ${idInProject})`);
@@ -1442,6 +1462,75 @@ const statements = {
         function (err) {
           if (err) reject(err);
           else resolve(this.changes);
+        },
+      );
+    });
+  },
+
+  /** connection_id -> how many violations are linked to it, for the given edges. */
+  countViolationsByConnection: (connectionIds, db) => {
+    if (connectionIds.length === 0) return Promise.resolve(new Map());
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT connection_id, COUNT(*) AS n FROM violations WHERE connection_id IN (${connectionIds
+          .map(() => "?")
+          .join(",")}) GROUP BY connection_id`,
+        connectionIds,
+        (err, rows) =>
+          err ? reject(err) : resolve(new Map((rows || []).map((row) => [row.connection_id, row.n]))),
+      );
+    });
+  },
+
+  /**
+   * Deletes one edge, unless a violation is linked to it.
+   *
+   * The check is inside the DELETE, so a violation recorded between a caller
+   * checking and the delete running still stops it. Resolves with rows removed.
+   */
+  deleteConnection: (connectionId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "DELETE FROM connections WHERE connection_id = ? AND project_id = ? " +
+          "AND NOT EXISTS (SELECT 1 FROM violations WHERE violations.connection_id = ?)",
+        [connectionId, projectId, connectionId],
+        function (err) {
+          if (err) return reject(err);
+          const removed = this.changes;
+          if (removed === 0) return resolve(0);
+          // Congestion samples for a road that no longer exists mean nothing.
+          db.run("DELETE FROM traversals WHERE connection_id = ?", [connectionId]);
+          db.run(
+            "UPDATE projects SET connection_count = MAX(connection_count - 1, 0) WHERE project_id = ?",
+            [projectId],
+          );
+          resolve(removed);
+        },
+      );
+    });
+  },
+
+  /**
+   * Deletes one checkpoint that no longer has edges. A car last seen there
+   * is treated as not seen anywhere, so its next sighting starts fresh rather
+   * than being measured from a camera that is gone.
+   */
+  deleteNode: (nodeId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "DELETE FROM nodes WHERE node_id = ? AND project_id = ? " +
+          "AND NOT EXISTS (SELECT 1 FROM connections WHERE from_node_id = ? OR to_node_id = ?)",
+        [nodeId, projectId, nodeId, nodeId],
+        function (err) {
+          if (err) return reject(err);
+          const removed = this.changes;
+          if (removed === 0) return resolve(0);
+          db.run("UPDATE car_data SET last_sighting_node_id = NULL WHERE last_sighting_node_id = ?", [nodeId]);
+          db.run(
+            "UPDATE projects SET node_count = MAX(node_count - 1, 0) WHERE project_id = ?",
+            [projectId],
+          );
+          resolve(removed);
         },
       );
     });

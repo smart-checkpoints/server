@@ -11,8 +11,18 @@ export type AgentTarget =
   | { kind: "point"; latitude: number; longitude: number }
   | { kind: "edge-new"; from_node_id: number; to_node_id: number }
   | { kind: "edge"; connection_id: number }
+  | { kind: "node"; node_id: number }
   | { kind: "node-move"; node_id: number; to: { latitude: number; longitude: number } }
-  | { kind: "ui"; element: "violations" | "quality" };
+  | { kind: "ui"; element: AgentUiElement };
+
+/** The console controls a cursor can go to, by their `data-agent-target`. */
+export type AgentUiElement = "violations" | "quality" | "frame" | "view-graph" | "view-map";
+
+/** What Sayes asked the console to show. Display only: nothing in the system changes. */
+export type AgentUiControl =
+  | { action: "frame"; node_ids: number[]; connection_ids: number[] }
+  | { action: "view"; view: "graph" | "map" }
+  | { action: "panel"; panel: "quality" | "violations" | "none" };
 
 export type AgentApiCall = { method: string; path: string; status: number; ms: number };
 
@@ -62,9 +72,12 @@ export type AgentEvents = {
     ms: number;
   };
   highlight: { connection_ids: number[]; node_ids: number[]; caption: string };
+  "ui.control": AgentUiControl;
   reply: { text: string };
   "run.limit": { kind: string; used: number; limit: number };
   "run.error": { message: string };
+  /** The API was overloaded or failed for a moment; the turn is tried again. */
+  "run.retrying": { attempt: number; of: number; wait_ms: number; reason: string };
   "run.finished": {
     run_id: string;
     session_id: string;
@@ -72,6 +85,7 @@ export type AgentEvents = {
     turns: number;
     tool_calls: number;
     ms: number;
+    usage?: Record<string, number>;
   };
 };
 
@@ -136,7 +150,7 @@ export function cancelRun(projectId: number, apiKey: string, runId: string) {
 export async function streamRun(
   projectId: number,
   apiKey: string,
-  body: { message: string; session_id?: string | null },
+  body: { message: string; session_id?: string | null; retry?: boolean },
   onEvent: (event: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {

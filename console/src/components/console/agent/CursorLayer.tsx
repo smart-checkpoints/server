@@ -6,7 +6,14 @@ import { houseEase } from "@/lib/ease";
 import type { AgentEvent, AgentTarget } from "@/lib/agent";
 import { describeAction, laneColour, laneName, type CameraOf } from "./labels";
 import type { AgentAction } from "./useAgent";
-import { CursorGlyph } from "./AgentPanel";
+
+function CursorGlyph({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
+      <path d="M2.5 1.5 L13 8 L8.2 9.2 L6.2 13.8 Z" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 type Point = { x: number; y: number };
 type Resolver = () => Point | null;
@@ -52,6 +59,8 @@ function resolver(canvas: RefObject<GraphCanvasHandle | null>, target: AgentTarg
       return () => c()?.latLngToClient(target.latitude, target.longitude) ?? null;
     case "edge":
       return () => c()?.edgeToClient(target.connection_id) ?? null;
+    case "node":
+      return () => c()?.nodeToClient(target.node_id) ?? null;
     case "edge-new":
       return part === "start"
         ? () => c()?.nodeToClient(target.from_node_id) ?? null

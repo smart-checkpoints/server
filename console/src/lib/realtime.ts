@@ -45,6 +45,10 @@ export type ServerEvents = {
     speed_limit: number;
     distance_status: DistanceStatus;
   }) => void;
+  /** An edge was deleted. Never sent for one with violations linked to it. */
+  "connection-removed": (data: { connection_id: number }) => void;
+  /** A checkpoint was deleted; its edges were removed first, each announced. */
+  "node-removed": (data: { node_id: number; id_in_project: number }) => void;
   "node-triggered": (data: {
     id_in_project: number;
     car_plate: string;

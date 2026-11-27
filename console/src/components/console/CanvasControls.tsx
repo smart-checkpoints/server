@@ -12,14 +12,18 @@ function ControlButton({
   label,
   onClick,
   children,
+  agentTarget,
 }: {
   label: string;
   onClick: () => void;
   children: ReactNode;
+  /** Where Sayes's cursor goes when it does this. */
+  agentTarget?: string;
 }) {
   return (
     <button
       type="button"
+      data-agent-target={agentTarget}
       onClick={onClick}
       aria-label={label}
       title={label}
@@ -66,7 +70,7 @@ export default function CanvasControls({
         </svg>
       </ControlButton>
 
-      <ControlButton label="Frame the graph" onClick={onFit}>
+      <ControlButton label="Frame the graph" onClick={onFit} agentTarget="frame">
         <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
           <path
             d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"

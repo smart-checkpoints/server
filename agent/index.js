@@ -108,6 +108,7 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
       apiBaseUrl,
       sessionId: sessionId || null,
       message: message.trim(),
+      retry: req.body.retry === true,
       emit: (event, data) => stream.send(event, data),
       db,
       statements,

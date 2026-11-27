@@ -43,6 +43,7 @@ export default function ViewToggle({
     >
       <button
         type="button"
+        data-agent-target="view-graph"
         onClick={() => onChange("graph")}
         aria-pressed={view === "graph"}
         className={cn(
@@ -56,6 +57,7 @@ export default function ViewToggle({
       </button>
       <button
         type="button"
+        data-agent-target="view-map"
         onClick={() => onChange("map")}
         disabled={!mapAvailable}
         aria-pressed={view === "map"}

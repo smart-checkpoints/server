@@ -51,9 +51,11 @@ const STREETS = [
     name: "El Geish Road (the Corniche)",
     aliases: ["el geish", "geish", "el geish road", "corniche", "the corniche", "shatby", "el shatby"],
     osmName: "طريق الجيش",
-    area: "El Shatby, by the Bibliotheca Alexandrina",
+    area: "From the Bibliotheca Alexandrina east past El Shatby",
     from: [31.20655, 29.90559],
-    to: [31.21411, 29.9199],
+    // East past El Shatby, about 4 km in all, so there is room for more than
+    // one stretch of cameras.
+    to: [31.22723, 29.93891],
     layout: "divided",
     direction: "eastbound",
     traffic: "divided road; these points are on the eastbound carriageway, on the Bibliotheca side",

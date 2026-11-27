@@ -1391,6 +1391,24 @@ app.get(
  * is a lie. The thresholds travel with the answer, because a flag an operator
  * cannot interrogate is a flag they will learn to ignore.
  */
+/**
+ * The congestion ratios the console receives every few seconds over
+ * Socket.IO, as a one-off read: connection_id -> ratio, 1 free-flowing.
+ */
+app.get(
+  "/project/:id/congestion",
+  authenticateAPIKey(db),
+  requireOwnProject,
+  async (req, res) => {
+    try {
+      res.json({ window_minutes: CONGESTION_WINDOW_MS / 60000, ratios: await computeCongestion(req.projectId) });
+    } catch (err) {
+      console.error("Error computing congestion:", err);
+      res.status(500).json({ error: "Failed to compute congestion" });
+    }
+  },
+);
+
 app.get(
   "/project/:id/diagnostics",
   authenticateAPIKey(db),
@@ -1590,6 +1608,133 @@ app.put("/connection/:id", authenticateAPIKey(db), async (req, res) => {
   } catch (err) {
     console.error("Error updating connection:", err);
     res.status(500).json({ error: "Failed to update connection" });
+  }
+});
+
+// --- Deleting edges and checkpoints ---
+//
+// A violation is a legal record of where and how fast a car was measured, and
+// it points at the edge it was measured on. Deleting that edge would leave
+// the record pointing at nothing an operator or a court could look at, so an
+// edge with violations linked to it cannot be deleted, and neither can a
+// checkpoint whose edges have any. The check is repeated inside the DELETE
+// statement itself, so a violation recorded mid-request still stops it.
+
+const VIOLATIONS_BLOCK_DELETE =
+  "Violations are legal records, and they point at the edge they were measured on, " +
+  "so an edge with violations linked to it cannot be deleted.";
+
+/** Rejects, as a 409 body, when any of these edges has violations linked. */
+async function violationsBlocking(connectionIds) {
+  const counts = await statements.countViolationsByConnection(connectionIds, db);
+  const blocked = connectionIds
+    .filter((id) => (counts.get(id) || 0) > 0)
+    .map((id) => ({ connection_id: id, violations: counts.get(id) }));
+  return blocked.length === 0 ? null : blocked;
+}
+
+app.delete("/connection/:id", authenticateAPIKey(db), async (req, res) => {
+  try {
+    const connectionId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(connectionId)) {
+      return res.status(400).json({ error: "Invalid connection id" });
+    }
+    const existing = await statements.getConnectionById(connectionId, db);
+    if (!existing) return res.status(404).json({ error: "Connection not found" });
+    if (existing.project_id !== req.projectId) {
+      return res.status(403).json({ error: "API key does not match project" });
+    }
+
+    const blocked = await violationsBlocking([connectionId]);
+    if (blocked) {
+      return res.status(409).json({
+        error: `This edge has ${blocked[0].violations} recorded violation(s) linked to it. ${VIOLATIONS_BLOCK_DELETE}`,
+        blocked_by: blocked,
+      });
+    }
+    const removed = await statements.deleteConnection(connectionId, req.projectId, db);
+    if (removed === 0) {
+      return res.status(409).json({ error: `A violation was just recorded on this edge. ${VIOLATIONS_BLOCK_DELETE}` });
+    }
+
+    io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: connectionId });
+    console.log(`🗑️  Edge ${connectionId} deleted in project ${req.projectId}`);
+    res.json({ success: true, connection_id: connectionId });
+  } catch (err) {
+    console.error("Error deleting connection:", err);
+    res.status(500).json({ error: "Failed to delete connection" });
+  }
+});
+
+/**
+ * Deletes a checkpoint and every edge touching it. All of it or none of it:
+ * if any of those edges has violations linked, nothing is deleted. Its
+ * camera number is never given to another checkpoint.
+ */
+app.delete("/node/:id", authenticateAPIKey(db), async (req, res) => {
+  try {
+    const nodeId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(nodeId)) return res.status(400).json({ error: "Invalid node id" });
+    const node = await statements.getNodeByNodeId(nodeId, db);
+    if (!node) return res.status(404).json({ error: "Node not found" });
+    if (node.project_id !== req.projectId) {
+      return res.status(403).json({ error: "API key does not match project" });
+    }
+
+    const touching = await statements.getConnectionsTouchingNode(nodeId, req.projectId, db);
+    const blocked = await violationsBlocking(touching.map((edge) => edge.connection_id));
+    if (blocked) {
+      const total = blocked.reduce((sum, edge) => sum + edge.violations, 0);
+      return res.status(409).json({
+        error:
+          `Checkpoint ${node.id_in_project} has ${blocked.length} edge(s) with ${total} recorded violation(s) linked to them. ` +
+          VIOLATIONS_BLOCK_DELETE,
+        blocked_by: blocked,
+      });
+    }
+
+    const removedEdges = [];
+    for (const edge of touching) {
+      const removed = await statements.deleteConnection(edge.connection_id, req.projectId, db);
+      if (removed === 0) {
+        for (const id of removedEdges) {
+          io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: id });
+        }
+        return res.status(409).json({
+          error: `A violation was just recorded on edge ${edge.connection_id}; the checkpoint was not deleted. ${VIOLATIONS_BLOCK_DELETE}`,
+          connections_removed: removedEdges,
+        });
+      }
+      removedEdges.push(edge.connection_id);
+    }
+
+    const removed = await statements.deleteNode(nodeId, req.projectId, db);
+    for (const id of removedEdges) {
+      io.to(`project-${req.projectId}`).emit("connection-removed", { connection_id: id });
+    }
+    if (removed === 0) {
+      return res.status(409).json({
+        error: "A new edge was connected to this checkpoint while it was being deleted; it was kept.",
+        connections_removed: removedEdges,
+      });
+    }
+
+    io.to(`project-${req.projectId}`).emit("node-removed", {
+      node_id: nodeId,
+      id_in_project: node.id_in_project,
+    });
+    console.log(
+      `🗑️  Checkpoint ${node.id_in_project} deleted in project ${req.projectId} with ${removedEdges.length} edge(s)`,
+    );
+    res.json({
+      success: true,
+      node_id: nodeId,
+      id_in_project: node.id_in_project,
+      connections_removed: removedEdges,
+    });
+  } catch (err) {
+    console.error("Error deleting node:", err);
+    res.status(500).json({ error: "Failed to delete node" });
   }
 });
 
@@ -1988,6 +2133,22 @@ async function broadcastCongestion() {
     }
 
     for (const projectId of projectRooms) {
+      const congestionData = await computeCongestion(projectId);
+      if (Object.keys(congestionData).length > 0) {
+        io.to(`project-${projectId}`).emit("congestion-update", congestionData);
+      }
+    }
+  } catch (err) {
+    console.error("Congestion broadcast error:", err);
+  }
+}
+
+/**
+ * connection_id -> congestion ratio C over the last few minutes: the average
+ * time cars took over the time the limit allows. 1 is free-flowing. Edges
+ * with no recent traffic, or that cannot enforce yet, are left out.
+ */
+async function computeCongestion(projectId) {
       const connections = await statements.getProjectConnections(projectId, db);
       const congestionData = {};
 
@@ -2013,14 +2174,7 @@ async function broadcastCongestion() {
           congestionData[conn.connection_id] = avgDeltaT / tLegal;
         }
       }
-
-      if (Object.keys(congestionData).length > 0) {
-        io.to(`project-${projectId}`).emit("congestion-update", congestionData);
-      }
-    }
-  } catch (err) {
-    console.error("Congestion broadcast error:", err);
-  }
+      return congestionData;
 }
 
 // --- Helpers ---

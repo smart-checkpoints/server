@@ -45,7 +45,23 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
       break;
     case "points_along_street":
       title = `Planning ${num(input.count) ?? ""} points along ${typeof input.street === "string" ? input.street : "the street"}`;
-      outcome = `Planned ${num(input.count) ?? ""} points, ${metres(result.spacing_m)} apart`;
+      outcome = `Planned ${num(input.count) ?? ""} points, ${metres(input.spacing_m)} apart`;
+      break;
+    case "points_between":
+      title = `Planning ${num(input.count) ?? ""} points between camera ${camera(cameraOf, input.from_node_id)} and camera ${camera(cameraOf, input.to_node_id)}`;
+      outcome = title.replace("Planning", "Planned");
+      break;
+    case "split_edge":
+      title = "Adding a camera on an edge";
+      outcome = `Placed camera ${num(result.camera) ?? "?"} on the edge`;
+      break;
+    case "delete_edge":
+      title = "Deleting an edge";
+      outcome = "Edge deleted";
+      break;
+    case "delete_checkpoint":
+      title = `Deleting camera ${camera(cameraOf, input.node_id)}`;
+      outcome = `Deleted camera ${num(result.camera) ?? camera(cameraOf, input.node_id)}`;
       break;
     case "create_checkpoint":
       title = "Placing a checkpoint";
@@ -80,6 +96,54 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
     case "get_diagnostics":
       title = "Running the quality check";
       outcome = "Quality check done";
+      break;
+    case "get_violations":
+      title = "Reading the violation records";
+      outcome = `${num(result.shown) ?? 0} of ${num(result.total_in_window) ?? 0} violations listed`;
+      break;
+    case "get_congestion":
+      title = "Reading live congestion";
+      outcome = Array.isArray(result.edges) && result.edges.length ? `Congestion on ${result.edges.length} edges` : "No live traffic reading";
+      break;
+    case "get_stats":
+      title = "Reading the project's figures";
+      outcome = "Read the project's figures";
+      break;
+    case "geocode":
+      title = `Looking up ${typeof input.query === "string" ? `"${input.query}"` : "a place"} on OpenStreetMap`;
+      outcome = Array.isArray(result.matches) && result.matches.length ? title.replace("Looking up", "Found") : "Not found on OpenStreetMap";
+      break;
+    case "road_info":
+      title = "Checking the road on OpenStreetMap";
+      outcome = typeof result.name === "string" ? `${result.name}: ${String(result.layout ?? "")}` : "Checked the road";
+      break;
+    case "nearby_places":
+      title = "Looking at what is nearby";
+      outcome = "Checked nearby places";
+      break;
+    case "web_search":
+      title = `Searching the web${typeof input.query === "string" ? ` for "${input.query}"` : ""}`;
+      outcome = title.replace("Searching", "Searched");
+      break;
+    case "code_execution":
+      title = "Sorting through the search results";
+      outcome = "Sorted the search results";
+      break;
+    case "web_fetch":
+      title = "Reading a web page";
+      outcome = typeof input.url === "string" ? `Read ${input.url}` : "Read a web page";
+      break;
+    case "frame_map":
+      title = "Framing the map";
+      outcome = "Framed the map";
+      break;
+    case "switch_view":
+      title = `Switching to the ${input.view === "map" ? "map" : "graph"} view`;
+      outcome = title.replace("Switching", "Switched");
+      break;
+    case "open_panel":
+      title = input.panel === "none" ? "Closing the panel" : `Opening ${input.panel === "quality" ? "Quality" : "Violations"}`;
+      outcome = title.replace("Opening", "Opened").replace("Closing", "Closed");
       break;
     case "highlight":
       title = "Highlighting on the map";

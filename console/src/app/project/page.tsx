@@ -27,9 +27,9 @@ import TestDrivePanel, {
 } from "@/components/console/TestDrivePanel";
 import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
-import AgentPanel from "@/components/console/agent/AgentPanel";
-import CursorLayer from "@/components/console/agent/CursorLayer";
-import { useAgent } from "@/components/console/agent/useAgent";
+import SayesDock from "@/components/console/agent/SayesDock";
+import type { Highlights } from "@/components/console/agent/useAgent";
+import type { AgentUiControl } from "@/lib/agent";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
@@ -60,7 +60,7 @@ import { connectProject } from "@/lib/realtime";
 import { clearSession, useConsoleSession } from "@/lib/session";
 
 /** A stable empty list, so the cursor layer is not re-run on every render. */
-const NO_ACTIONS: never[] = [];
+const NO_HIGHLIGHTS: Highlights = { connectionIds: [], nodeIds: [], caption: "" };
 
 export default function ProjectConsolePage() {
   /* `undefined` is "not read yet", `null` is "read, and there is none". The
@@ -131,10 +131,12 @@ export default function ProjectConsolePage() {
   const socket = useRef<ConsoleSocket | null>(null);
   const flashSeq = useRef(0);
 
-  /* Sayes, the agent. Its cursors leave from the mark in its panel. */
-  const agent = useAgent(session?.project_id ?? 0, session?.apiKey ?? "");
-  const agentMark = useRef<HTMLSpanElement>(null);
+  /* Sayes, the agent: one docked module. The page only draws what it highlights. */
+  const [agentHighlights, setAgentHighlights] = useState<Highlights>(NO_HIGHLIGHTS);
   const [presentation, setPresentation] = useState(false);
+  const togglePresentation = useCallback(() => setPresentation((on) => !on), []);
+  /* Once a chat is under way the empty-network prompt would sit over its work. */
+  const [agentActive, setAgentActive] = useState(false);
   const cameraOf = useCallback(
     (nodeId: number) => nodes.find((node) => node.node_id === nodeId)?.id_in_project,
     [nodes],
@@ -271,6 +273,20 @@ export default function ProjectConsolePage() {
             : edge,
         ),
       );
+    });
+
+    channel.on("connection-removed", (data) => {
+      setConnections((current) =>
+        current.filter((edge) => edge.connection_id !== data.connection_id),
+      );
+      setSelected((current) =>
+        current && current.connection_id === data.connection_id ? null : current,
+      );
+      setGeometryVersion((version) => version + 1);
+    });
+
+    channel.on("node-removed", (data) => {
+      setNodes((current) => current.filter((node) => node.node_id !== data.node_id));
     });
 
     channel.on("node-triggered", (data) => {
@@ -530,6 +546,34 @@ export default function ProjectConsolePage() {
     }
   }, [session]);
 
+  /* What Sayes asks the console to show. Display only; changes nothing. */
+  const agentControl = useCallback(
+    (control: AgentUiControl) => {
+      if (control.action === "view") {
+        openView(control.view);
+      } else if (control.action === "panel") {
+        setShowDiagnostics(control.panel === "quality");
+        setShowViolations(control.panel === "violations");
+        setShowSettings(false);
+        if (control.panel === "quality") void recheck();
+      } else if (control.action === "frame") {
+        const ids = new Set(control.node_ids);
+        for (const edge of connections) {
+          if (control.connection_ids.includes(edge.connection_id)) {
+            ids.add(edge.from_node_id);
+            ids.add(edge.to_node_id);
+          }
+        }
+        const points = nodes
+          .filter((node) => ids.has(node.node_id))
+          .map((node) => ({ lat: node.latitude, lng: node.longitude }));
+        if (points.length > 0) canvas.current?.focus(points, 700);
+        else canvas.current?.frame([], 700);
+      }
+    },
+    [connections, nodes, openView, recheck],
+  );
+
   /** node_id -> the one-line reason, for the mark on the canvas. */
   const nodeWarnings = useMemo(() => {
     const warnings: Record<number, string> = {};
@@ -717,23 +761,6 @@ export default function ProjectConsolePage() {
       />
 
       <div className="console-shell flex bg-bg">
-        <AgentPanel
-          ref={agentMark}
-          projectId={session.project_id}
-          apiKey={session.apiKey}
-          info={agent.info}
-          turns={agent.turns}
-          busy={agent.busy}
-          thinking={agent.thinking}
-          cameraOf={cameraOf}
-          presentation={presentation}
-          onTogglePresentation={() => setPresentation((on) => !on)}
-          onSend={(message) => void agent.send(message)}
-          onCancel={agent.cancel}
-          onConfirm={agent.confirm}
-          onReset={agent.reset}
-        />
-
         <div className="relative min-w-0 flex-1">
         <GraphCanvas
           ref={canvas}
@@ -746,8 +773,8 @@ export default function ProjectConsolePage() {
           onSelectConnection={setSelected}
           onDraftEdge={setDraft}
           onDraftMove={setMoveDraft}
-          highlightedConnectionIds={agent.highlights.connectionIds}
-          highlightedNodeIds={agent.highlights.nodeIds}
+          highlightedConnectionIds={agentHighlights.connectionIds}
+          highlightedNodeIds={agentHighlights.nodeIds}
           showHover={!presentation}
           onClickNode={
             testDriveOpen
@@ -758,10 +785,10 @@ export default function ProjectConsolePage() {
           picks={testDriveOpen ? picks : undefined}
         />
 
-        {agent.highlights.caption ? (
+        {agentHighlights.caption && (agentHighlights.connectionIds.length > 0 || agentHighlights.nodeIds.length > 0) ? (
           <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center">
             <span className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
-              {agent.highlights.caption}
+              {agentHighlights.caption}
             </span>
           </div>
         ) : null}
@@ -870,7 +897,7 @@ export default function ProjectConsolePage() {
         nodes.length === 0 &&
         activeView === "graph" &&
         !presentation &&
-        agent.turns.length === 0 ? (
+        !agentActive ? (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
             <div className="pointer-events-auto max-w-md rounded-2xl border border-border bg-surface shadow-lg">
               <EmptyState
@@ -922,16 +949,19 @@ export default function ProjectConsolePage() {
           liveCount={liveViolations}
         />
         </div>
-      </div>
 
-      <CursorLayer
-        actions={agent.currentTurn?.actions ?? NO_ACTIONS}
-        subscribe={agent.subscribe}
-        canvas={canvas}
-        origin={agentMark}
-        leadMs={agent.info?.cursor_lead_ms ?? 700}
-        cameraOf={cameraOf}
-      />
+        <SayesDock
+          projectId={session.project_id}
+          apiKey={session.apiKey}
+          canvas={canvas}
+          cameraOf={cameraOf}
+          presentation={presentation}
+          onTogglePresentation={togglePresentation}
+          onHighlights={setAgentHighlights}
+          onActiveChange={setAgentActive}
+          onControl={agentControl}
+        />
+      </div>
 
       <NewConnectionDialog
         draft={draft}

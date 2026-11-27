@@ -58,6 +58,8 @@ function createApiClient(baseUrl, apiKey, projectId, record) {
     getDistanceDriverStatus: () => call("GET", `${p}/distance-driver-status`),
     getViolations: () => call("GET", `${p}/violations`),
     getDiagnostics: () => call("GET", `${p}/diagnostics`),
+    getCongestion: () => call("GET", `${p}/congestion`),
+    getMapDriver: () => call("GET", `${p}/map-driver`),
     createNode: (latitude, longitude) => call("POST", "/create-node", { latitude, longitude }),
     createConnection: (fromNodeId, toNodeId, speedLimit) =>
       call("POST", "/create-connection", {
@@ -68,6 +70,8 @@ function createApiClient(baseUrl, apiKey, projectId, record) {
     setSpeedLimit: (connectionId, speedLimit) =>
       call("PUT", `/connection/${connectionId}`, { "speed-limit": speedLimit }),
     moveNode: (nodeId, latitude, longitude) => call("PUT", `/node/${nodeId}`, { latitude, longitude }),
+    deleteConnection: (connectionId) => call("DELETE", `/connection/${connectionId}`),
+    deleteNode: (nodeId) => call("DELETE", `/node/${nodeId}`),
   };
 }
 

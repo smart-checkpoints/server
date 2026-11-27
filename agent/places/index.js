@@ -117,6 +117,77 @@ function pointsAlongStreet(street, count) {
   });
 }
 
+/** Cumulative metres along a street's line, one entry per vertex. */
+function cumulative(street) {
+  const out = [0];
+  for (let i = 1; i < street.line.length; i += 1) {
+    out.push(out[i - 1] + haversineMeters(ll(street.line[i - 1]), ll(street.line[i])));
+  }
+  return out;
+}
+
+/**
+ * How far along a street a coordinate is, in metres from its start, and how
+ * far off the line it sits. Null when it is further than `withinM` away.
+ */
+function positionOnStreet(street, latitude, longitude, withinM = 60) {
+  const k = Math.cos((latitude * Math.PI) / 180);
+  const along = cumulative(street);
+  let best = null;
+  for (let i = 1; i < street.line.length; i += 1) {
+    const [ay, ax] = [street.line[i - 1][0], street.line[i - 1][1] * k];
+    const [by, bx] = [street.line[i][0], street.line[i][1] * k];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((longitude * k - ax) * dx + (latitude - ay) * dy) / len2));
+    const q = { lat: ay + t * dy, lng: (ax + t * dx) / k };
+    const d = haversineMeters({ lat: latitude, lng: longitude }, q);
+    if (!best || d < best.offset) best = { offset: d, metres: along[i - 1] + t * (along[i] - along[i - 1]) };
+  }
+  return best && best.offset <= withinM ? { metres: Math.round(best.metres), offset_m: Math.round(best.offset) } : null;
+}
+
+/** The coordinate `metres` along a street. */
+function pointAt(street, metres) {
+  const along = cumulative(street);
+  const line = street.line;
+  const at = Math.max(0, Math.min(along[along.length - 1], metres));
+  let i = 1;
+  while (i < line.length - 1 && along[i] < at) i += 1;
+  const span = along[i] - along[i - 1];
+  const t = span === 0 ? 0 : (at - along[i - 1]) / span;
+  return {
+    latitude: Math.round((line[i - 1][0] + (line[i][0] - line[i - 1][0]) * t) * 1e6) / 1e6,
+    longitude: Math.round((line[i - 1][1] + (line[i][1] - line[i - 1][1]) * t) * 1e6) / 1e6,
+    metres_from_start: Math.round(at),
+  };
+}
+
+/**
+ * `count` points `spacing` metres apart on a street, in the first stretch
+ * that keeps `clearance` metres from every existing camera position given
+ * (metres along the street). Null when no stretch is long enough.
+ */
+function pointsInFreeStretch(street, count, spacing, occupied, clearance) {
+  const length = street.length_m;
+  const need = (count - 1) * spacing;
+  const blocked = occupied
+    .map((m) => [m - clearance, m + clearance])
+    .sort((a, b) => a[0] - b[0]);
+  // Walk the gaps between blocked intervals, street ends included.
+  let cursor = 0;
+  const gaps = [];
+  for (const [lo, hi] of blocked) {
+    if (lo > cursor) gaps.push([cursor, Math.min(lo, length)]);
+    cursor = Math.max(cursor, hi);
+  }
+  if (cursor < length) gaps.push([cursor, length]);
+  const gap = gaps.find(([lo, hi]) => hi - lo >= need);
+  if (!gap) return null;
+  return Array.from({ length: count }, (_, i) => pointAt(street, gap[0] + i * spacing));
+}
+
 /** The demo street a coordinate is on (within `withinM` of its line), or null. */
 function streetAt(latitude, longitude, withinM = 60) {
   const k = Math.cos((latitude * Math.PI) / 180);
@@ -157,4 +228,7 @@ module.exports = {
   pointsAlongStreet,
   nearestLandmark,
   streetAt,
+  positionOnStreet,
+  pointAt,
+  pointsInFreeStretch,
 };

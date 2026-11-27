@@ -13,9 +13,14 @@
  * key and it creates a demo project and prints the line to add.
  *
  * The reset deletes the project's checkpoints, edges, sightings and
- * violations directly in SQLite, because there is deliberately no API that
- * deletes any of them. It keeps the project, its keys, its map driver
- * approval and the agent's audit log. Everything after the reset goes through
+ * violations directly in SQLite. The API deliberately cannot do this: no
+ * endpoint deletes a violation, and an edge with violations linked to it
+ * cannot be deleted. It keeps the project, its keys, its map driver approval
+ * and the agent's audit log. It also restarts camera numbering at 0, which
+ * nothing else ever does: this is a demo project being wiped whole, so no
+ * camera in the field can still hold one of its numbers.
+ *
+ * Everything after the reset goes through
  * the REST API like any other client: checkpoints and edges are created over
  * it, and violations exist only because sightings were replayed through
  * POST /report-checkpoint, the real enforcement path. No violation row is
@@ -120,7 +125,7 @@ function resetProject(projectId) {
     DELETE FROM car_data WHERE project_id = ${projectId};
     DELETE FROM connections WHERE project_id = ${projectId};
     DELETE FROM nodes WHERE project_id = ${projectId};
-    UPDATE projects SET node_count = 0, connection_count = 0 WHERE project_id = ${projectId};
+    UPDATE projects SET node_count = 0, connection_count = 0, next_id_in_project = 0 WHERE project_id = ${projectId};
     COMMIT;`;
   return new Promise((resolve, reject) => {
     db.exec(sql, (err) => {

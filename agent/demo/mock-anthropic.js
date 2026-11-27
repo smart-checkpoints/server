@@ -53,7 +53,7 @@ function script(body) {
   const current = userTexts[userTexts.length - 1];
 
   if (current.startsWith("BUILD")) {
-    if (firstUser) return message([{ type: "thinking", thinking: "Placing three checkpoints on the Corniche." }, { type: "tool_use", name: "points_along_street", input: { street: "El Geish Road", count: 3 } }], "tool_use");
+    if (firstUser) return message([{ type: "thinking", thinking: "Placing three checkpoints on the Corniche." }, { type: "tool_use", name: "points_along_street", input: { street: "El Geish Road", count: 3, spacing_m: 800 } }], "tool_use");
     const tool = results[0] && results[0].data;
     if (tool && tool.points) {
       return message(tool.points.map((p) => ({ type: "tool_use", name: "create_checkpoint", input: { latitude: p.latitude, longitude: p.longitude } })), "tool_use");
@@ -71,7 +71,7 @@ function script(body) {
   }
   if (current.startsWith("LANES")) {
     // Five checkpoints at once: one cursor in each of the five lanes.
-    if (firstUser) return message([{ type: "tool_use", name: "points_along_street", input: { street: "Abu Qir Street", count: 5 } }], "tool_use");
+    if (firstUser) return message([{ type: "tool_use", name: "points_along_street", input: { street: "Abu Qir Street", count: 5, spacing_m: 300 } }], "tool_use");
     const tool = results[0] && results[0].data;
     if (tool && tool.points) return message(tool.points.map((p) => ({ type: "tool_use", name: "create_checkpoint", input: { latitude: p.latitude, longitude: p.longitude } })), "tool_use");
     return message([{ type: "text", text: "Placed five cameras along Abu Qir Street." }], "end_turn");

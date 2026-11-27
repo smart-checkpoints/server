@@ -73,10 +73,28 @@ function isValidLatLng(latitude, longitude) {
   );
 }
 
+/**
+ * Where point `p` lies relative to the straight segment from `a` to `b`:
+ * `distance` is metres from p to the nearest point of the segment, and `t`
+ * how far along it that point is, 0 at a and 1 at b. All three are
+ * { lat, lng }. Flat projection around a, which is exact enough for the few
+ * kilometres an edge spans.
+ */
+function segmentOffsetMeters(p, a, b) {
+  const proj = makeProjection(a.lat, a.lng);
+  const P = proj.project(p.lat, p.lng);
+  const B = proj.project(b.lat, b.lng);
+  const len2 = B.x * B.x + B.y * B.y;
+  const raw = len2 === 0 ? 0 : (P.x * B.x + P.y * B.y) / len2;
+  const t = Math.max(0, Math.min(1, raw));
+  return { distance: Math.hypot(P.x - t * B.x, P.y - t * B.y), t: raw };
+}
+
 module.exports = {
   EARTH_RADIUS_M,
   makeProjection,
   haversineMeters,
+  segmentOffsetMeters,
   parseCoordinate,
   isValidLatLng,
 };

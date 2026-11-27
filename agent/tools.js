@@ -6,9 +6,10 @@
  * Each one maps onto ALLOWED endpoints of the REST API and nothing else.
  * What the agent must never do - create, edit or delete violations or
  * evidence, touch API keys, auth, projects or the map driver - has no tool
- * here at all, so no prompt can talk it into doing so. There is no delete
- * either, and no tool accepts a road distance: distances are measured by the
- * distance driver, never stated by the agent.
+ * here at all, so no prompt can talk it into doing so. Deletes exist only for
+ * edges and checkpoints with no violations linked, always behind an operator
+ * confirmation, and no tool accepts a road distance: distances are measured
+ * by the distance driver, never stated by the agent.
  *
  * A tool has three parts:
  *   validate(input)      -> { value } or { error }; inputs are re-checked here
@@ -24,6 +25,18 @@
 
 const { makeProjection, haversineMeters } = require("../geo.js");
 const places = require("./places");
+const { camerasOnSegment } = require("../diagnostics.js");
+const osm = require("./osm");
+
+/** OSM services fail in ordinary ways (busy, rate limited); say so plainly. */
+async function osmCall(task) {
+  try {
+    return await task();
+  } catch (err) {
+    if (err instanceof osm.OsmError) throw new ToolError(`${err.message} OpenStreetMap lookups are a shared public service; try again shortly.`);
+    throw err;
+  }
+}
 
 const MIN_LIMIT_KMH = 5;
 const MAX_LIMIT_KMH = 200;
@@ -93,6 +106,71 @@ async function findNode(api, nodeId) {
   return node;
 }
 
+const cameraOf = (nodes) => (nodeId) => {
+  const node = nodes.find((n) => n.node_id === nodeId);
+  return node ? node.id_in_project : "?";
+};
+
+/**
+ * Where a coordinate is along a demo street, if it is on one. On a one-way or
+ * divided street only edges running the traced way count as being on it:
+ * the reverse way is the other carriageway, or not a legal road at all.
+ */
+function along(street, node) {
+  return street ? places.positionOnStreet(street, node.latitude, node.longitude) : null;
+}
+
+function streetOf(node) {
+  const name = places.streetAt(node.latitude, node.longitude);
+  return name ? places.findStreet(name) : null;
+}
+
+/** Same street, and this edge runs a way that street carries. */
+function edgeSpan(street, from, to) {
+  const pf = along(street, from);
+  const pt = along(street, to);
+  if (!pf || !pt || pf.metres === pt.metres) return null;
+  if (street.layout !== "two-way" && pt.metres < pf.metres) return null;
+  return { lo: Math.min(pf.metres, pt.metres), hi: Math.max(pf.metres, pt.metres) };
+}
+
+const END_MARGIN_M = 25;
+
+/**
+ * The cameras an edge from -> to would pass: on the street between its two
+ * ends when all three are on a demo street (which follows the road's curves),
+ * and otherwise on the straight line between them, as the server's quality
+ * check sees it.
+ */
+function camerasBetween(from, to, nodes, edges) {
+  const street = streetOf(from);
+  const span = street && edgeSpan(street, from, to);
+  const found = new Map(camerasOnSegment(from, to, nodes, edges).map((c) => [c.node_id, c]));
+  if (span) {
+    for (const node of nodes) {
+      if (node.node_id === from.node_id || node.node_id === to.node_id || found.has(node.node_id)) continue;
+      const at = along(street, node);
+      if (at && at.metres > span.lo + END_MARGIN_M && at.metres < span.hi - END_MARGIN_M) {
+        found.set(node.node_id, { node_id: node.node_id, id_in_project: node.id_in_project });
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+/** The edge a position sits on (between its two cameras, same road), or null. */
+function edgeUnder(point, nodes, edges) {
+  const ghost = { node_id: -1, id_in_project: -1, latitude: point.latitude, longitude: point.longitude };
+  const byId = new Map(nodes.map((n) => [n.node_id, n]));
+  for (const edge of edges) {
+    const from = byId.get(edge.from_node_id);
+    const to = byId.get(edge.to_node_id);
+    if (!from || !to) continue;
+    if (camerasBetween(from, to, [from, to, ghost], [edge]).some((c) => c.node_id === -1)) return { edge, from, to };
+  }
+  return null;
+}
+
 /* -------------------------------------------------------------------------
    The tools
    ------------------------------------------------------------------------- */
@@ -100,6 +178,7 @@ async function findNode(api, nodeId) {
 const TOOLS = [
   {
     name: "get_network",
+    loose: true,
     description:
       "Read the current checkpoint network: every checkpoint (node_id, camera number, position, nearby landmark) and every edge (a one-way road section between two checkpoints, with its speed limit, measured road distance and status), plus whether a distance driver is connected. Call this before acting on existing checkpoints or edges.",
     input_schema: strict({}),
@@ -117,6 +196,7 @@ const TOOLS = [
 
   {
     name: "get_driver_status",
+    loose: true,
     description:
       "Check whether a distance driver (the routing service that measures road distances) is connected to this project. Read-only: drivers are separate services and cannot be switched from here.",
     input_schema: strict({}),
@@ -130,6 +210,7 @@ const TOOLS = [
 
   {
     name: "find_place",
+    loose: true,
     description:
       "Look up a street or landmark in the demo place list (Alexandria: Fouad Street / El Horreya Road, El Geish Road / the Corniche at El Shatby, Abu Qir Street, and landmarks along them). Returns coordinates on the road. This is the only source of coordinates for named places; never guess coordinates.",
     input_schema: strict({ query: { type: "string", description: "A street or landmark name, as the operator said it." } }),
@@ -157,26 +238,53 @@ const TOOLS = [
   {
     name: "points_along_street",
     description:
-      "Get evenly spaced points along a known street, both ends included, in the legal direction of travel, for placing checkpoints on it. Also says whether the street is one-way, divided or two-way, and which way to connect the checkpoints.",
+      "Get points for new checkpoints on a known street, spacing_m apart, in the legal direction of travel. They are always placed in the first stretch of the street that is clear of the cameras and edges already there, so a new stretch never overlaps or interleaves with an existing one. To add a camera between two existing ones, use points_between and split_edge instead. Also returns the cameras already on the street and how traffic runs, which decides how to connect the new ones. About 800 m is a sensible default spacing.",
     input_schema: strict({
       street: { type: "string", description: "Street name from the place list." },
       count: { type: "integer", description: "How many points, 1 to 10." },
+      spacing_m: { type: "number", description: "Metres between neighbouring points, 100 to 3000." },
     }),
     validate: (input) => {
       if (typeof input.street !== "string" || !input.street.trim()) return { error: "street must be a non-empty string" };
       if (!isInt(input.count) || input.count < 1 || input.count > 10) return { error: "count must be an integer from 1 to 10" };
-      return { value: { street: input.street.trim(), count: input.count } };
+      if (!isNum(input.spacing_m) || input.spacing_m < 100 || input.spacing_m > 3000) return { error: "spacing_m must be 100 to 3000" };
+      return { value: { street: input.street.trim(), count: input.count, spacing_m: Math.round(input.spacing_m) } };
     },
     prepare: async (value) => ({ target: null, plan: value }),
-    run: async (plan) => {
+    run: async (plan, ctx) => {
       const street = places.findStreet(plan.street);
       if (!street) {
         throw new ToolError(
           `"${plan.street}" is not in the place list. Known streets: ${places.places.streets.map((s) => s.name).join("; ")}.`,
         );
       }
-      const points = places.pointsAlongStreet(street, plan.count);
-      const spacing = plan.count > 1 ? Math.round(street.length_m / (plan.count - 1)) : null;
+      const [nodes, edges] = await Promise.all([ctx.api.getNodes(), ctx.api.getConnections()]);
+      const on = new Map();
+      for (const node of nodes) {
+        const at = places.positionOnStreet(street, node.latitude, node.longitude);
+        if (at) on.set(node.node_id, { camera: node.id_in_project, node_id: node.node_id, metres: at.metres });
+      }
+      // Taken: every camera, and every edge's span between two cameras on
+      // this street, so a new stretch cannot land inside an existing one.
+      const clearance = Math.max(200, plan.spacing_m / 2);
+      const taken = [...on.values()].map((c) => c.metres);
+      for (const edge of edges) {
+        const a = on.get(edge.from_node_id);
+        const b = on.get(edge.to_node_id);
+        if (!a || !b) continue;
+        const lo = Math.min(a.metres, b.metres);
+        const hi = Math.max(a.metres, b.metres);
+        for (let m = lo; m <= hi; m += clearance) taken.push(m);
+      }
+      const existing = [...on.values()].sort((a, b) => a.metres - b.metres);
+      const points = places.pointsInFreeStretch(street, plan.count, plan.spacing_m, taken, clearance);
+      if (!points) {
+        throw new ToolError(
+          `No clear stretch of ${(plan.count - 1) * plan.spacing_m} m is left on ${street.name} (${street.length_m} m in the place list). ` +
+            `Cameras already there: ${existing.map((c) => `camera ${c.camera} at ${c.metres} m`).join(", ") || "none"}. ` +
+            "Ask the operator where to put them, or use a shorter spacing.",
+        );
+      }
       return {
         street: street.name,
         layout: street.layout,
@@ -184,16 +292,54 @@ const TOOLS = [
         traffic: street.traffic,
         connect: places.connectRule(street),
         length_m: street.length_m,
-        spacing_m: spacing,
+        existing_cameras_on_street: existing.map((c) => ({ camera: c.camera, node_id: c.node_id, metres_from_start: c.metres })),
+        new_stretch: `${points[0].metres_from_start} to ${points[points.length - 1].metres_from_start} m from the start, clear of the cameras above`,
         points,
       };
     },
   },
 
   {
+    name: "points_between",
+    description:
+      "Get evenly spaced points on the road between two existing checkpoints, for adding cameras in between. Place each one with split_edge on the edge that connects them, never with create_checkpoint.",
+    input_schema: strict({
+      from_node_id: { type: "integer" },
+      to_node_id: { type: "integer" },
+      count: { type: "integer", description: "How many points, 1 to 5." },
+    }),
+    validate: (input) => {
+      if (!isInt(input.from_node_id) || !isInt(input.to_node_id)) return { error: "node ids must be integers" };
+      if (!isInt(input.count) || input.count < 1 || input.count > 5) return { error: "count must be 1 to 5" };
+      return { value: { ...input } };
+    },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const nodes = await ctx.api.getNodes();
+      const a = nodes.find((n) => n.node_id === plan.from_node_id);
+      const b = nodes.find((n) => n.node_id === plan.to_node_id);
+      if (!a || !b) throw new ToolError("Both checkpoints must exist in this project.");
+      const name = places.streetAt(a.latitude, a.longitude);
+      const street = name ? places.findStreet(name) : null;
+      const pa = street && places.positionOnStreet(street, a.latitude, a.longitude);
+      const pb = street && places.positionOnStreet(street, b.latitude, b.longitude);
+      const points = [];
+      for (let i = 1; i <= plan.count; i += 1) {
+        const f = i / (plan.count + 1);
+        points.push(
+          pa && pb
+            ? places.pointAt(street, pa.metres + (pb.metres - pa.metres) * f)
+            : { latitude: round6(a.latitude + (b.latitude - a.latitude) * f), longitude: round6(a.longitude + (b.longitude - a.longitude) * f) },
+        );
+      }
+      return { from_camera: a.id_in_project, to_camera: b.id_in_project, on_street: pa && pb ? street.name : null, points };
+    },
+  },
+
+  {
     name: "create_checkpoint",
     description:
-      "Place one new checkpoint (camera) at a position. Use coordinates from find_place or points_along_street. To place several, call this several times in the same turn: the calls run in parallel.",
+      "Place one new checkpoint (camera) at a position. Use coordinates from find_place or points_along_street. To place several, call this several times in the same turn: the calls run in parallel. Refused if the position is on an existing edge between two cameras: use split_edge for that.",
     input_schema: strict({
       latitude: { type: "number", description: "WGS84 degrees." },
       longitude: { type: "number", description: "WGS84 degrees." },
@@ -202,10 +348,17 @@ const TOOLS = [
       isLatLng(input.latitude, input.longitude)
         ? { value: { latitude: round6(input.latitude), longitude: round6(input.longitude) } }
         : { error: "latitude must be within +/-90 and longitude within +/-180" },
-    prepare: async (value) => ({
-      target: { kind: "point", latitude: value.latitude, longitude: value.longitude },
-      plan: value,
-    }),
+    prepare: async (value, ctx) => {
+      const [nodes, edges] = await Promise.all([ctx.api.getNodes(), ctx.api.getConnections()]);
+      const hit = edgeUnder(value, nodes, edges);
+      if (hit) {
+        throw new ToolError(
+          `That position is on the existing edge from camera ${hit.from.id_in_project} to camera ${hit.to.id_in_project} (connection_id ${hit.edge.connection_id}). ` +
+            "Use split_edge, so that edge is replaced by two edges through the new camera.",
+        );
+      }
+      return { target: { kind: "point", latitude: value.latitude, longitude: value.longitude }, plan: value };
+    },
     run: async (plan, ctx) => {
       const created = await ctx.api.createNode(plan.latitude, plan.longitude);
       return {
@@ -220,7 +373,7 @@ const TOOLS = [
   {
     name: "create_edge",
     description:
-      "Connect two checkpoints with a one-way edge (from -> to) and a speed limit, in the legal direction of travel. The road distance is measured by the distance driver; it cannot be set here. Only on a two-way undivided road, or when the operator asks for both directions, add the reverse edge too. Create all the edges in the same turn. Measuring can take several seconds.",
+      "Connect two ADJACENT checkpoints with a one-way edge (from -> to) and a speed limit, in the legal direction of travel. Refused if another camera sits on the road between them: connect through that camera instead. The road distance is measured by the distance driver; it cannot be set here. Only on a two-way undivided road, or when the operator asks for both directions, add the reverse edge too. Create all the edges in the same turn. Measuring can take several seconds.",
     input_schema: strict({
       from_node_id: { type: "integer" },
       to_node_id: { type: "integer" },
@@ -235,7 +388,7 @@ const TOOLS = [
       return { value: { ...input } };
     },
     prepare: async (value, ctx) => {
-      const { edges, driverConnected } = await readNetwork(ctx.api);
+      const { nodes, edges, driverConnected } = await readNetwork(ctx.api);
       const existing = edges.find(
         (edge) => edge.from_node_id === value.from_node_id && edge.to_node_id === value.to_node_id,
       );
@@ -243,6 +396,17 @@ const TOOLS = [
         throw new ToolError(
           `These checkpoints are already connected in this direction (connection_id ${existing.connection_id}, ${existing.speed_limit} km/h). Use set_speed_limit to change it.`,
         );
+      }
+      const from = nodes.find((n) => n.node_id === value.from_node_id);
+      const to = nodes.find((n) => n.node_id === value.to_node_id);
+      if (from && to) {
+        const skipped = camerasBetween(from, to, nodes, edges);
+        if (skipped.length > 0) {
+          throw new ToolError(
+            `Camera ${skipped.map((c) => c.id_in_project).join(", ")} is on the road between camera ${from.id_in_project} and camera ${to.id_in_project}. ` +
+              "An edge must connect neighbouring cameras: connect through the camera in between instead.",
+          );
+        }
       }
       return {
         target: { kind: "edge-new", from_node_id: value.from_node_id, to_node_id: value.to_node_id },
@@ -261,6 +425,158 @@ const TOOLS = [
         result.note = "No distance driver is connected, so this edge is not enforcing until one measures it.";
       }
       return result;
+    },
+  },
+
+  {
+    name: "split_edge",
+    description:
+      "Add a camera ON an existing edge A -> B: creates checkpoint N there, connects A -> N and N -> B at the same speed limit, and deletes A -> B. If B -> A exists too, it is split the same way. Get the position from points_between. The operator always confirms. Refused if the edge has violations linked to it: those are legal records tied to that edge.",
+    input_schema: strict({
+      connection_id: { type: "integer" },
+      latitude: { type: "number" },
+      longitude: { type: "number" },
+    }),
+    validate: (input) => {
+      if (!isInt(input.connection_id)) return { error: "connection_id must be an integer" };
+      if (!isLatLng(input.latitude, input.longitude)) return { error: "latitude/longitude out of range" };
+      return { value: { connection_id: input.connection_id, latitude: round6(input.latitude), longitude: round6(input.longitude) } };
+    },
+    prepare: async (value, ctx) => {
+      const [nodes, edges, violations] = await Promise.all([
+        ctx.api.getNodes(),
+        ctx.api.getConnections(),
+        ctx.api.getViolations(),
+      ]);
+      const edge = edges.find((e) => e.connection_id === value.connection_id);
+      if (!edge) throw new ToolError(`There is no edge with connection_id ${value.connection_id}.`);
+      const cam = cameraOf(nodes);
+      const hit = edgeUnder(value, nodes, [edge]);
+      if (!hit) {
+        throw new ToolError(
+          `That position is not on the edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)}. Use points_between for a position on it.`,
+        );
+      }
+      const reverse = edges.find((e) => e.from_node_id === edge.to_node_id && e.to_node_id === edge.from_node_id);
+      const split = reverse ? [edge, reverse] : [edge];
+      const linked = violations.filter((v) => split.some((e) => e.connection_id === v.connection_id)).length;
+      if (linked > 0) {
+        throw new ToolError(
+          `The edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)} has ${linked} recorded violation(s) linked to it. ` +
+            "Violations are legal records tied to that edge, so it cannot be split or deleted.",
+        );
+      }
+      const pair = (e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`;
+      return {
+        target: { kind: "point", latitude: value.latitude, longitude: value.longitude },
+        confirm: {
+          summary: `Add a camera between camera ${cam(edge.from_node_id)} and camera ${cam(edge.to_node_id)}?`,
+          details: [
+            `Replaces ${split.map(pair).join(" and ")} with two edges through the new camera, at ${edge.speed_limit} km/h.`,
+            "No violations are linked to the edge being replaced. The new edges enforce once the distance driver measures them.",
+          ],
+        },
+        plan: {
+          ...value,
+          split: split.map((e) => ({ connection_id: e.connection_id, from: e.from_node_id, to: e.to_node_id, limit: e.speed_limit })),
+        },
+      };
+    },
+    run: async (plan, ctx) => {
+      const created = await ctx.api.createNode(plan.latitude, plan.longitude);
+      const replaced = [];
+      for (const old of plan.split) {
+        const first = await ctx.api.createConnection(old.from, created.node_id, old.limit);
+        const second = await ctx.api.createConnection(created.node_id, old.to, old.limit);
+        await ctx.api.deleteConnection(old.connection_id);
+        replaced.push({ deleted_connection_id: old.connection_id, new_connection_ids: [first.connection_id, second.connection_id] });
+      }
+      return { node_id: created.node_id, camera: created.id_in_project, latitude: plan.latitude, longitude: plan.longitude, replaced };
+    },
+  },
+
+  {
+    name: "delete_edge",
+    description:
+      "Delete one edge. The operator always confirms. Refused if violations are linked to it: they are legal records tied to that edge.",
+    input_schema: strict({ connection_id: { type: "integer" } }),
+    validate: (input) =>
+      isInt(input.connection_id) ? { value: { connection_id: input.connection_id } } : { error: "connection_id must be an integer" },
+    prepare: async (value, ctx) => {
+      const [nodes, edges, violations] = await Promise.all([
+        ctx.api.getNodes(),
+        ctx.api.getConnections(),
+        ctx.api.getViolations(),
+      ]);
+      const edge = edges.find((e) => e.connection_id === value.connection_id);
+      if (!edge) throw new ToolError(`There is no edge with connection_id ${value.connection_id}.`);
+      const cam = cameraOf(nodes);
+      const linked = violations.filter((v) => v.connection_id === edge.connection_id).length;
+      if (linked > 0) {
+        throw new ToolError(
+          `The edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)} has ${linked} recorded violation(s) linked to it. Violations are legal records, so it cannot be deleted.`,
+        );
+      }
+      return {
+        target: { kind: "edge", connection_id: edge.connection_id },
+        confirm: {
+          summary: `Delete the edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)}?`,
+          details: [
+            `${edge.speed_limit} km/h, ${edge.distance === null ? "not measured" : `${Math.round(edge.distance)} m`}. No violations are linked to it.`,
+            "Cars between these two cameras will no longer be checked.",
+          ],
+        },
+        plan: value,
+      };
+    },
+    run: async (plan, ctx) => {
+      await ctx.api.deleteConnection(plan.connection_id);
+      return { deleted_connection_id: plan.connection_id };
+    },
+  },
+
+  {
+    name: "delete_checkpoint",
+    description:
+      "Delete one checkpoint and every edge touching it. The operator always confirms. Refused if any of those edges has violations linked to it. Its camera number is never reused.",
+    input_schema: strict({ node_id: { type: "integer" } }),
+    validate: (input) => (isInt(input.node_id) ? { value: { node_id: input.node_id } } : { error: "node_id must be an integer" }),
+    prepare: async (value, ctx) => {
+      const [nodes, edges, violations] = await Promise.all([
+        ctx.api.getNodes(),
+        ctx.api.getConnections(),
+        ctx.api.getViolations(),
+      ]);
+      const node = nodes.find((n) => n.node_id === value.node_id);
+      if (!node) throw new ToolError(`There is no checkpoint with node_id ${value.node_id}.`);
+      const touching = edges.filter((e) => e.from_node_id === node.node_id || e.to_node_id === node.node_id);
+      const linked = violations.filter((v) => touching.some((e) => e.connection_id === v.connection_id)).length;
+      if (linked > 0) {
+        throw new ToolError(
+          `Camera ${node.id_in_project} has edges with ${linked} recorded violation(s) linked to them. Violations are legal records, so it cannot be deleted.`,
+        );
+      }
+      const cam = cameraOf(nodes);
+      const n = touching.length;
+      return {
+        target: { kind: "node", node_id: node.node_id },
+        confirm: {
+          summary: `Delete camera ${node.id_in_project}${n ? ` and its ${n} edge${n === 1 ? "" : "s"}` : ""}?`,
+          details: [
+            ...(n ? [`Edges removed: ${touching.map((e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`).join(", ")}.`] : []),
+            `Camera number ${node.id_in_project} will not be given to any new checkpoint.`,
+          ],
+        },
+        plan: value,
+      };
+    },
+    run: async (plan, ctx) => {
+      const result = await ctx.api.deleteNode(plan.node_id);
+      return {
+        deleted_node_id: plan.node_id,
+        camera: result.id_in_project,
+        deleted_connection_ids: result.connections_removed,
+      };
     },
   },
 
@@ -484,6 +800,232 @@ const TOOLS = [
   },
 
   {
+    name: "get_violations",
+    description:
+      "List individual recorded violations, newest first: time, edge, measured speed against the limit. Read-only. Plates are personal data: set include_plates only when the operator explicitly asks for plates.",
+    input_schema: strict({
+      days: { type: "integer", description: "1 to 90." },
+      connection_id: { anyOf: [{ type: "integer" }, { type: "null" }], description: "Only this edge, or null for all." },
+      limit: { type: "integer", description: "1 to 50." },
+      include_plates: { type: "boolean" },
+    }),
+    validate: (input) => {
+      if (!isInt(input.days) || input.days < 1 || input.days > 90) return { error: "days must be 1 to 90" };
+      if (input.connection_id !== null && !isInt(input.connection_id)) return { error: "connection_id must be an integer or null" };
+      if (!isInt(input.limit) || input.limit < 1 || input.limit > 50) return { error: "limit must be 1 to 50" };
+      return { value: { ...input, include_plates: input.include_plates === true } };
+    },
+    prepare: async (value) => ({ target: { kind: "ui", element: "violations" }, plan: value }),
+    run: async (plan, ctx) => {
+      const [violations, edges, nodes] = await Promise.all([ctx.api.getViolations(), ctx.api.getConnections(), ctx.api.getNodes()]);
+      const since = Date.now() - plan.days * 86400000;
+      const cam = cameraOf(nodes);
+      const rows = violations
+        .filter((v) => new Date(v.timestamp).getTime() >= since)
+        .filter((v) => plan.connection_id === null || v.connection_id === plan.connection_id)
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      return {
+        total_in_window: rows.length,
+        shown: Math.min(rows.length, plan.limit),
+        violations: rows.slice(0, plan.limit).map((v) => {
+          const edge = edges.find((e) => e.connection_id === v.connection_id);
+          return {
+            at: v.timestamp,
+            connection_id: v.connection_id,
+            ...(edge ? { from_camera: cam(edge.from_node_id), to_camera: cam(edge.to_node_id), speed_limit_kmh: edge.speed_limit } : {}),
+            speed_kmh: Math.round(v.car_speed),
+            ...(plan.include_plates ? { plate: v.car_plate } : {}),
+          };
+        }),
+      };
+    },
+  },
+
+  {
+    name: "get_congestion",
+    loose: true,
+    description:
+      "Live congestion per edge over the last few minutes: the average time cars took divided by the time the limit allows. 1 is free-flowing, 2 means twice as slow. Edges with no recent traffic are not listed.",
+    input_schema: strict({}),
+    validate: () => ({ value: {} }),
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const [congestion, edges, nodes] = await Promise.all([ctx.api.getCongestion(), ctx.api.getConnections(), ctx.api.getNodes()]);
+      const cam = cameraOf(nodes);
+      const list = Object.entries(congestion.ratios || {})
+        .map(([id, ratio]) => {
+          const edge = edges.find((e) => e.connection_id === Number(id));
+          return {
+            connection_id: Number(id),
+            ...(edge ? { from_camera: cam(edge.from_node_id), to_camera: cam(edge.to_node_id) } : {}),
+            ratio: Math.round(ratio * 100) / 100,
+            reading: ratio >= 2 ? "congested" : ratio >= 1.3 ? "slow" : "free-flowing",
+          };
+        })
+        .sort((a, b) => b.ratio - a.ratio);
+      return {
+        window_minutes: congestion.window_minutes,
+        edges: list,
+        ...(list.length === 0 ? { note: "No car has crossed a measured edge recently, so there is no live reading." } : {}),
+      };
+    },
+  },
+
+  {
+    name: "get_stats",
+    loose: true,
+    description:
+      "A one-call overview of the project: how many cameras and edges, how many edges are measured and enforcing, violations in the last 24 hours, 7 days and in all, and the busiest edge this week.",
+    input_schema: strict({}),
+    validate: () => ({ value: {} }),
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const [{ nodes, edges, driverConnected }, violations] = await Promise.all([readNetwork(ctx.api), ctx.api.getViolations()]);
+      const now = Date.now();
+      const within = (ms) => violations.filter((v) => new Date(v.timestamp).getTime() >= now - ms);
+      const week = within(7 * 86400000);
+      const perEdge = new Map();
+      for (const v of week) perEdge.set(v.connection_id, (perEdge.get(v.connection_id) || 0) + 1);
+      const [busiestId, busiestCount] = [...perEdge.entries()].sort((a, b) => b[1] - a[1])[0] || [];
+      const busiest = edges.find((e) => e.connection_id === busiestId);
+      const cam = cameraOf(nodes);
+      const byStreet = {};
+      for (const node of nodes) {
+        const street = places.streetAt(node.latitude, node.longitude) || "elsewhere";
+        byStreet[street] = (byStreet[street] || 0) + 1;
+      }
+      return {
+        cameras: nodes.length,
+        cameras_by_street: byStreet,
+        edges: edges.length,
+        edges_measured: edges.filter((e) => e.distance_status === "ok").length,
+        edges_no_route: edges.filter((e) => e.distance_status === "no-route").length,
+        distance_driver_connected: driverConnected,
+        violations_last_24h: within(86400000).length,
+        violations_last_7_days: week.length,
+        violations_all_time: violations.length,
+        ...(busiest
+          ? { busiest_edge_this_week: { connection_id: busiest.connection_id, from_camera: cam(busiest.from_node_id), to_camera: cam(busiest.to_node_id), violations: busiestCount } }
+          : {}),
+      };
+    },
+  },
+
+  {
+    name: "geocode",
+    loose: true,
+    description:
+      "Find a place in Egypt that is not in the demo place list, with OpenStreetMap (Nominatim). Returns matches with the nearest point on a drivable road. Use the nearest_road point, not the raw point, if a checkpoint goes there, and tell the operator the position came from OpenStreetMap so they can check it. Slow (about a second per lookup); results are cached.",
+    input_schema: strict({ query: { type: "string", description: "An address, street or landmark, with the city." } }),
+    validate: (input) =>
+      typeof input.query === "string" && input.query.trim()
+        ? { value: { query: input.query.trim().slice(0, 200) } }
+        : { error: "query must be a non-empty string" },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan) => {
+      const matches = await osmCall(() => osm.geocode(plan.query));
+      return {
+        source: "OpenStreetMap Nominatim",
+        matches,
+        ...(matches.length === 0 ? { note: "OpenStreetMap found nothing in Egypt by that name. Ask the operator for a nearby landmark or coordinates." } : {}),
+      };
+    },
+  },
+
+  {
+    name: "road_info",
+    loose: true,
+    description:
+      "What OpenStreetMap records about the road at a point: its name, class, whether it is one-way, divided or two-way, which way traffic runs, lanes and the posted speed limit. Use it before placing or connecting cameras outside the demo place list. A missing value means OSM does not have it: say so, never guess.",
+    input_schema: strict({ latitude: { type: "number" }, longitude: { type: "number" } }),
+    validate: (input) =>
+      isLatLng(input.latitude, input.longitude)
+        ? { value: { latitude: round6(input.latitude), longitude: round6(input.longitude) } }
+        : { error: "latitude/longitude out of range" },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan) => osmCall(() => osm.roadAt(plan.latitude, plan.longitude)),
+  },
+
+  {
+    name: "nearby_places",
+    loose: true,
+    description:
+      "Schools, hospitals, traffic signals, pedestrian crossings, speed bumps, fuel stations and bus stops near a point, from OpenStreetMap, for judging where cameras and lower limits make sense. OSM has no accident or traffic data: never present these as accident statistics.",
+    input_schema: strict({
+      latitude: { type: "number" },
+      longitude: { type: "number" },
+      radius_m: { type: "integer", description: "50 to 1000." },
+    }),
+    validate: (input) => {
+      if (!isLatLng(input.latitude, input.longitude)) return { error: "latitude/longitude out of range" };
+      if (!isInt(input.radius_m) || input.radius_m < 50 || input.radius_m > 1000) return { error: "radius_m must be 50 to 1000" };
+      return { value: { latitude: round6(input.latitude), longitude: round6(input.longitude), radius_m: input.radius_m } };
+    },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan) => osmCall(() => osm.nearby(plan.latitude, plan.longitude, plan.radius_m)),
+  },
+
+  {
+    name: "frame_map",
+    description:
+      "Move the operator's map to show these checkpoints and edges, or the whole network if both lists are empty. Display only.",
+    input_schema: strict({
+      node_ids: { type: "array", items: { type: "integer" } },
+      connection_ids: { type: "array", items: { type: "integer" } },
+    }),
+    validate: (input) => {
+      const ints = (list) => Array.isArray(list) && list.every(isInt);
+      if (!ints(input.node_ids) || !ints(input.connection_ids)) return { error: "ids must be arrays of integers" };
+      return { value: { node_ids: input.node_ids.slice(0, 100), connection_ids: input.connection_ids.slice(0, 100) } };
+    },
+    prepare: async (value) => ({ target: { kind: "ui", element: "frame" }, plan: value }),
+    run: async (plan, ctx) => {
+      ctx.emit("ui.control", { action: "frame", node_ids: plan.node_ids, connection_ids: plan.connection_ids });
+      return { framed: plan.node_ids.length + plan.connection_ids.length || "the whole network" };
+    },
+  },
+
+  {
+    name: "switch_view",
+    description:
+      "Switch the operator's console between the graph view and the map view. The map view exists only when the project's map driver is approved and running. Display only.",
+    input_schema: strict({ view: { type: "string", enum: ["graph", "map"] } }),
+    validate: (input) => (input.view === "graph" || input.view === "map" ? { value: { view: input.view } } : { error: "view must be graph or map" }),
+    prepare: async (value, ctx) => {
+      if (value.view === "map") {
+        const map = await ctx.api.getMapDriver();
+        if (!(map && map.connected && map.status === "approved")) {
+          throw new ToolError(
+            "The map view is not available: this project has no approved, running map driver. Only an operator can approve one, under Project.",
+          );
+        }
+      }
+      return { target: { kind: "ui", element: value.view === "map" ? "view-map" : "view-graph" }, plan: value };
+    },
+    run: async (plan, ctx) => {
+      ctx.emit("ui.control", { action: "view", view: plan.view });
+      return { view: plan.view };
+    },
+  },
+
+  {
+    name: "open_panel",
+    description:
+      "Open the Quality panel (data-quality flags) or the Violations panel on the operator's screen, or close whichever is open. Display only.",
+    input_schema: strict({ panel: { type: "string", enum: ["quality", "violations", "none"] } }),
+    validate: (input) =>
+      ["quality", "violations", "none"].includes(input.panel) ? { value: { panel: input.panel } } : { error: "panel must be quality, violations or none" },
+    prepare: async (value) => ({
+      target: value.panel === "none" ? null : { kind: "ui", element: value.panel },
+      plan: value,
+    }),
+    run: async (plan, ctx) => {
+      ctx.emit("ui.control", { action: "panel", panel: plan.panel });
+      return { panel: plan.panel };
+    },
+  },
+
+  {
     name: "highlight",
     description:
       "Highlight checkpoints and edges on the operator's map, for example the results of a question. Display only: it changes nothing in the system. An empty list clears highlights.",
@@ -560,7 +1102,10 @@ const definitions = TOOLS.map((tool) => ({
   name: tool.name,
   description: tool.description,
   input_schema: tool.input_schema,
-  strict: true,
+  // The API allows 20 strict tools. Every tool that changes something is
+  // strict; a few read-only lookups are not, and validate() checks their
+  // inputs here either way.
+  strict: !tool.loose,
 }));
 
 module.exports = { TOOLS, BY_NAME, definitions, ToolError };

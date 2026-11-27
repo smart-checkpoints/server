@@ -20,7 +20,7 @@
  * route geometry.
  */
 
-const { haversineMeters } = require("./geo.js");
+const { haversineMeters, segmentOffsetMeters, makeProjection } = require("./geo.js");
 
 /**
  * The thresholds, in one block because they are guesses.
@@ -44,6 +44,17 @@ const DIAGNOSTICS = {
   NODE_MIN_EDGES: 3,
   /** Share of a node's judgeable edges that must be circuitous to blame it. */
   NODE_FLAG_FRACTION: 2 / 3,
+  /**
+   * A camera this close to the straight line of an edge, between its ends,
+   * is on the road that edge measures: the edge skips it. Judged on the
+   * straight line between the two cameras, because the server does not read
+   * route geometry; on a road that bends hard between two cameras far apart,
+   * a camera on the bend can sit further than this from the line and go
+   * unflagged.
+   */
+  PASSES_CAMERA_M: 30,
+  /** Within this fraction of either end, a camera is the end, not a skip. */
+  PASSES_CAMERA_END_FRACTION: 0.05,
 };
 
 /** The thresholds as the endpoint reports them: snake_case, like every row. */
@@ -54,7 +65,56 @@ const THRESHOLDS = {
   endpoint_offset_flag_m: DIAGNOSTICS.ENDPOINT_OFFSET_FLAG_M,
   node_min_edges: DIAGNOSTICS.NODE_MIN_EDGES,
   node_flag_fraction: DIAGNOSTICS.NODE_FLAG_FRACTION,
+  passes_camera_m: DIAGNOSTICS.PASSES_CAMERA_M,
 };
+
+/** Unit heading from a to b on the local plane, or null for a zero-length pair. */
+function heading(a, b) {
+  const p = makeProjection(a.latitude, a.longitude).project(b.latitude, b.longitude);
+  const length = Math.hypot(p.x, p.y);
+  return length === 0 ? null : { x: p.x / length, y: p.y / length };
+}
+
+/**
+ * The cameras an edge from `from` to `to` would pass without stopping: on
+ * its straight line, between its ends, and on the same carriageway.
+ *
+ * "Same carriageway" is read from a camera's own edges. A camera none of
+ * whose edges runs the same way as this one is on the other side of a
+ * divided road, and is not on this edge's road at all. A camera with no edges
+ * yet cannot be told apart, so it counts.
+ *
+ * Shared with the agent, which refuses to create an edge that skips a camera.
+ */
+function camerasOnSegment(from, to, nodes, connections) {
+  const direction = heading(from, to);
+  if (!direction) return [];
+  const byId = new Map(nodes.map((node) => [node.node_id, node]));
+  const found = [];
+  for (const camera of nodes) {
+    if (camera.node_id === from.node_id || camera.node_id === to.node_id) continue;
+    const { distance, t } = segmentOffsetMeters(
+      { lat: camera.latitude, lng: camera.longitude },
+      { lat: from.latitude, lng: from.longitude },
+      { lat: to.latitude, lng: to.longitude },
+    );
+    const end = DIAGNOSTICS.PASSES_CAMERA_END_FRACTION;
+    if (distance > DIAGNOSTICS.PASSES_CAMERA_M || t <= end || t >= 1 - end) continue;
+
+    const own = connections.filter((edge) => edge.from_node_id === camera.node_id || edge.to_node_id === camera.node_id);
+    if (own.length > 0) {
+      const sameWay = own.some((edge) => {
+        const a = byId.get(edge.from_node_id);
+        const b = byId.get(edge.to_node_id);
+        const h = a && b ? heading(a, b) : null;
+        return h && h.x * direction.x + h.y * direction.y > 0.5;
+      });
+      if (!sameWay) continue;
+    }
+    found.push({ node_id: camera.node_id, id_in_project: camera.id_in_project, distance_m: round(distance, 1), along: round(t, 3) });
+  }
+  return found.sort((a, b) => a.along - b.along);
+}
 
 /**
  * The metres a driver reported between each coordinate it was given and the
@@ -199,6 +259,12 @@ function analyseProject(nodes, connections) {
       }
     }
 
+    // Signal D - an edge that skips a camera. Two cameras with a third on the
+    // road between them must be connected through it; an edge straight past
+    // it measures a road nobody can drive without being seen in the middle.
+    const passes = camerasOnSegment(from, to, nodes, connections);
+    if (passes.length > 0) flags.push("passes-camera");
+
     edges.push({
       connection_id: conn.connection_id,
       from_node_id: conn.from_node_id,
@@ -214,6 +280,8 @@ function analyseProject(nodes, connections) {
         : null,
       /** Whether this edge counted toward its endpoints' verdicts. */
       evaluated,
+      /** Cameras on this edge's road between its ends, if it skips any. */
+      passes_cameras: passes,
       flags,
     });
   }
@@ -291,9 +359,10 @@ function nodeRank(node) {
 
 /** An impossible edge is a hard error; a circuitous one is a question. */
 function edgeRank(edge) {
-  if (edge.flags.includes("impossible")) return 2;
+  if (edge.flags.includes("impossible")) return 3;
+  if (edge.flags.includes("passes-camera")) return 2;
   if (edge.flags.includes("circuitous")) return 1;
   return 0;
 }
 
-module.exports = { DIAGNOSTICS, THRESHOLDS, analyseProject };
+module.exports = { DIAGNOSTICS, THRESHOLDS, analyseProject, camerasOnSegment };

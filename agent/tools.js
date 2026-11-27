@@ -27,6 +27,8 @@ const { makeProjection, haversineMeters } = require("../geo.js");
 const places = require("./places");
 const { camerasOnSegment } = require("../diagnostics.js");
 const osm = require("./osm");
+const { buildReport } = require("./report.js");
+const { takeSnapshot, planRestore, describePlan, applyRestore, isEmpty } = require("./restore.js");
 
 /** OSM services fail in ordinary ways (busy, rate limited); say so plainly. */
 async function osmCall(task) {
@@ -367,6 +369,81 @@ const TOOLS = [
         latitude: plan.latitude,
         longitude: plan.longitude,
       };
+    },
+  },
+
+  {
+    name: "import_checkpoints",
+    description:
+      "Place many checkpoints at once, for example every row of a CSV the operator attached: one call, one confirmation card. Points that fall on an existing edge are skipped and reported (use split_edge for those). Up to 100 points; camera numbers follow the order given. Connect them afterwards with create_edge in the legal direction of travel.",
+    input_schema: strict({
+      points: {
+        type: "array",
+        items: strict({
+          latitude: { type: "number" },
+          longitude: { type: "number" },
+          label: { type: "string", description: "The row's name or id from the file, or an empty string." },
+        }),
+      },
+      source: { type: "string", description: "Where the points came from, for example the file name." },
+    }),
+    validate: (input) => {
+      if (!Array.isArray(input.points) || input.points.length === 0 || input.points.length > 100) {
+        return { error: "points must be a list of 1 to 100" };
+      }
+      const bad = input.points.findIndex((p) => !p || !isLatLng(p.latitude, p.longitude));
+      if (bad >= 0) return { error: `point ${bad + 1} has an invalid latitude/longitude` };
+      return {
+        value: {
+          points: input.points.map((p) => ({
+            latitude: round6(p.latitude),
+            longitude: round6(p.longitude),
+            label: typeof p.label === "string" ? p.label.slice(0, 60) : "",
+          })),
+          source: typeof input.source === "string" ? input.source.slice(0, 120) : "",
+        },
+      };
+    },
+    prepare: async (value, ctx) => {
+      const [nodes, edges] = await Promise.all([ctx.api.getNodes(), ctx.api.getConnections()]);
+      const place = [];
+      const skipped = [];
+      for (const p of value.points) {
+        const hit = edgeUnder(p, nodes, edges);
+        if (hit) skipped.push({ ...p, on_edge: `${hit.from.id_in_project} → ${hit.to.id_in_project}` });
+        else place.push(p);
+      }
+      if (place.length === 0) throw new ToolError("Every point is on an existing edge. Use split_edge for those.");
+      const streets = {};
+      for (const p of place) {
+        const street = places.streetAt(p.latitude, p.longitude) || "elsewhere";
+        streets[street] = (streets[street] || 0) + 1;
+      }
+      return {
+        target: { kind: "point", latitude: place[0].latitude, longitude: place[0].longitude },
+        confirm: {
+          summary: `Place ${place.length} camera${place.length === 1 ? "" : "s"}${value.source ? ` from ${value.source}` : ""}?`,
+          details: [
+            `Where: ${Object.entries(streets).map(([s, n]) => `${n} on ${s}`).join(", ")}.`,
+            ...(skipped.length ? [`Skipped ${skipped.length}: on an existing edge (${skipped.map((p) => p.label || p.on_edge).join(", ")}).`] : []),
+            "They are not connected yet; edges come next.",
+          ],
+        },
+        plan: { place, skipped },
+      };
+    },
+    run: async (plan, ctx) => {
+      const created = [];
+      const failed = [];
+      for (const p of plan.place) {
+        try {
+          const node = await ctx.api.createNode(p.latitude, p.longitude);
+          created.push({ node_id: node.node_id, camera: node.id_in_project, label: p.label });
+        } catch (err) {
+          failed.push({ label: p.label, error: err.message });
+        }
+      }
+      return { created, skipped_on_existing_edges: plan.skipped, ...(failed.length ? { failed } : {}) };
     },
   },
 
@@ -1069,6 +1146,106 @@ const TOOLS = [
     run: async (plan, ctx) => {
       ctx.emit("ui.control", { action: "panel", panel: plan.panel });
       return { panel: plan.panel };
+    },
+  },
+
+  {
+    name: "list_restore_points",
+    loose: true,
+    description:
+      "List the project's restore points, newest first: saved copies of the checkpoint network (positions, edges, speed limits; never violations). One is saved automatically before every request that changes the network, named after that request.",
+    input_schema: strict({}),
+    validate: () => ({ value: {} }),
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const points = await ctx.restorePoints.list();
+      return {
+        restore_points: points.slice(0, 20).map((p) => ({
+          restore_point_id: p.restore_point_id,
+          name: p.name,
+          saved_at: p.created_at,
+          automatic: p.origin === "auto",
+          cameras: p.cameras,
+          edges: p.edges,
+        })),
+      };
+    },
+  },
+
+  {
+    name: "save_restore_point",
+    loose: true,
+    description: "Save the checkpoint network as it is now under a name, so it can be put back later. Changes nothing.",
+    input_schema: strict({ name: { type: "string", description: "A short name the operator will recognise." } }),
+    validate: (input) =>
+      typeof input.name === "string" && input.name.trim()
+        ? { value: { name: input.name.trim().slice(0, 120) } }
+        : { error: "name must be a non-empty string" },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const snapshot = await takeSnapshot(ctx.api);
+      const id = await ctx.restorePoints.save(plan.name, snapshot);
+      return { restore_point_id: id, name: plan.name, cameras: snapshot.nodes.length, edges: snapshot.edges.length };
+    },
+  },
+
+  {
+    name: "restore_to",
+    description:
+      "Put the checkpoint network back the way a restore point saved it: moves cameras back, removes cameras and edges added since, re-creates deleted ones and puts speed limits back. The operator always confirms. Edges with violations linked are kept, and cameras that come back get new numbers. Violations are never touched. To undo the last request, use the newest automatic restore point.",
+    input_schema: strict({ restore_point_id: { type: "integer" } }),
+    validate: (input) =>
+      isInt(input.restore_point_id) ? { value: { restore_point_id: input.restore_point_id } } : { error: "restore_point_id must be an integer" },
+    prepare: async (value, ctx) => {
+      const point = await ctx.restorePoints.get(value.restore_point_id);
+      if (!point) throw new ToolError(`There is no restore point ${value.restore_point_id} in this project.`);
+      const plan = await planRestore(ctx.api, point.snapshot);
+      if (isEmpty(plan)) throw new ToolError(`The network already matches “${point.name}”. Nothing to restore.`);
+      return {
+        target: { kind: "ui", element: "frame" },
+        confirm: { summary: `Restore “${point.name}”?`, details: describePlan(plan) },
+        plan: { point, plan },
+      };
+    },
+    run: async ({ point, plan }, ctx) => {
+      const done = await applyRestore(ctx.api, plan);
+      return { restored: point.name, ...done };
+    },
+  },
+
+  {
+    name: "generate_report",
+    loose: true,
+    description:
+      "Write a PDF report of the project: summary figures, violations per edge over the last N days, the network with limits and distances, and data-quality flags. The operator gets a download button. Plates are personal data: set include_plates only when the operator explicitly asks for plates in the report.",
+    input_schema: strict({
+      title: { type: "string", description: "A short title, for example 'Weekly enforcement report'." },
+      days: { type: "integer", description: "1 to 90. A week is 7." },
+      include_plates: { type: "boolean" },
+      notes: { type: "string", description: "An optional short paragraph for the top of the report, or an empty string." },
+    }),
+    validate: (input) => {
+      if (typeof input.title !== "string" || !input.title.trim()) return { error: "title must be a non-empty string" };
+      if (!isInt(input.days) || input.days < 1 || input.days > 90) return { error: "days must be 1 to 90" };
+      return {
+        value: {
+          title: input.title.trim().slice(0, 80),
+          days: input.days,
+          include_plates: input.include_plates === true,
+          notes: typeof input.notes === "string" ? input.notes.trim().slice(0, 1000) : "",
+        },
+      };
+    },
+    prepare: async (value) => ({ target: null, plan: value }),
+    run: async (plan, ctx) => {
+      const report = await buildReport(ctx.api, ctx.projectId, {
+        title: plan.title,
+        days: plan.days,
+        includePlates: plan.include_plates,
+        notes: plan.notes,
+      });
+      ctx.emit("report", { report_id: report.id, title: report.title, filename: report.filename, pages: report.pages });
+      return { report: report.title, pages: report.pages, plates_included: plan.include_plates, note: "The operator has a download button under your reply." };
     },
   },
 

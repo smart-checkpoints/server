@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import {
   useEffect,
+  useMemo,
   useLayoutEffect,
   useRef,
   useState,
@@ -11,12 +12,13 @@ import {
   type RefObject,
 } from "react";
 import type { GraphCanvasHandle } from "@/components/console/GraphCanvas";
-import type { AgentUiControl } from "@/lib/agent";
+import type { AgentAttachment, AgentUiControl } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { houseEase } from "@/lib/ease";
 import CursorLayer from "./CursorLayer";
 import type { ReplayMask } from "./cursors/replayMask";
 import Markdown from "./Markdown";
+import { ReportCard, RestoreButton, RestoreContext, RestorePointList } from "./RestorePoints";
 import SayesMark from "./SayesMark";
 import { describeAction, EXAMPLE_PROMPTS, laneColour, type CameraOf } from "./labels";
 import { useAgent, type AgentAction, type AgentChat, type AgentTurn, type Highlights } from "./useAgent";
@@ -60,7 +62,7 @@ export default function SayesDock(props: SayesDockProps) {
   const { info, turns, busy, thinking } = agent;
   const presentation = props.presentation;
   const [open, setOpen] = useState(true);
-  const [view, setView] = useState<"chat" | "history">("chat");
+  const [view, setView] = useState<"chat" | "history" | "restore">("chat");
   const origin = useRef<HTMLSpanElement>(null);
 
   const { onHighlights, onTogglePresentation, cameraOf } = props;
@@ -121,6 +123,10 @@ export default function SayesDock(props: SayesDockProps) {
   }, [waiting]);
 
   const disabled = !info || !info.enabled;
+  const restoreContext = useMemo(
+    () => ({ projectId: props.projectId, apiKey: props.apiKey, busy }),
+    [props.projectId, props.apiKey, busy],
+  );
   const status = disabled ? "Off" : busy ? (thinking ? "Thinking…" : "Working…") : "Ready";
   const width = presentation ? 480 : 400;
 
@@ -134,6 +140,7 @@ export default function SayesDock(props: SayesDockProps) {
         className="relative z-20 h-full shrink-0 overflow-hidden border-l border-border bg-surface"
         style={{ borderLeftWidth: open ? 1 : 0 }}
       >
+        <RestoreContext.Provider value={restoreContext}>
         <div className="flex h-full flex-col" style={{ width }}>
           <header className="flex items-center gap-3 border-b border-border px-4 py-3">
             <span
@@ -162,6 +169,13 @@ export default function SayesDock(props: SayesDockProps) {
               <path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2M3.5 3v2.5H6M8 5.5V8l1.8 1.2" />
             </IconButton>
             <IconButton
+              label={view === "restore" ? "Back to the chat" : "Restore points"}
+              active={view === "restore"}
+              onClick={() => setView(view === "restore" ? "chat" : "restore")}
+            >
+              <path d="M3 8a5 5 0 1 0 1.5-3.6M3 3v2.6h2.6M8 5.2V8" />
+            </IconButton>
+            <IconButton
               label="New chat"
               disabled={busy}
               onClick={() => {
@@ -176,7 +190,9 @@ export default function SayesDock(props: SayesDockProps) {
             </IconButton>
           </header>
 
-          {view === "history" ? (
+          {view === "restore" ? (
+            <RestorePointList />
+          ) : view === "history" ? (
             <History
               chats={agent.chats}
               current={agent.chatId}
@@ -205,13 +221,14 @@ export default function SayesDock(props: SayesDockProps) {
           <Composer
             disabled={disabled}
             busy={busy}
-            onSend={(text) => {
+            onSend={(text, attachments) => {
               setView("chat");
-              void agent.send(text);
+              void agent.send(text, { attachments });
             }}
             onStop={agent.cancel}
           />
         </div>
+        </RestoreContext.Provider>
       </motion.aside>
 
       {!open ? (
@@ -451,7 +468,18 @@ function Turn({
   return (
     <section className="space-y-3">
       <div className="flex justify-end">
-        <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-md bg-bg-subtle px-4 py-2.5 text-sm text-text">{turn.request}</p>
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-bg-subtle px-4 py-2.5 text-sm text-text">
+          {turn.attachments?.length ? (
+            <ul className="mb-1.5 flex flex-wrap gap-1">
+              {turn.attachments.map((file) => (
+                <li key={file.name} className="rounded-full border border-border bg-surface px-2 py-0.5 font-mono text-[0.6875rem] text-text-dim">
+                  {file.name}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <p className="whitespace-pre-wrap">{turn.request}</p>
+        </div>
       </div>
 
       {turn.notes ? <p className="text-sm italic text-text-dim">{turn.notes.trim()}</p> : null}
@@ -468,6 +496,7 @@ function Turn({
       {live && thinking ? <Working /> : null}
 
       {turn.reply ? <Markdown text={turn.reply} className="space-y-2 text-sm leading-relaxed text-text" /> : null}
+      {turn.reports?.map((report) => <ReportCard key={report.id} report={report} />)}
       {turn.error ? (
         <div className="rounded-xl border border-red/40 px-4 py-3 text-sm text-text">
           <p>{turn.error}</p>
@@ -483,6 +512,10 @@ function Turn({
         </div>
       ) : null}
       {turn.status === "cancelled" ? <p className="font-mono text-xs text-text-dim">Stopped.</p> : null}
+
+      {!live && turn.restorePoint && turn.actions.some((a) => a.status === "done") ? (
+        <RestoreButton id={turn.restorePoint.id} label="Undo this" />
+      ) : null}
 
       {!live && !presentation && turn.actions.length > 0 ? <Trace turn={turn} /> : null}
     </section>
@@ -676,6 +709,31 @@ function Json({ label, value }: { label: string; value: unknown }) {
    Composer
    ------------------------------------------------------------------------- */
 
+const ACCEPT: Record<string, { label: string; maxBytes: number }> = {
+  "image/png": { label: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/jpeg": { label: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/webp": { label: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/gif": { label: "image", maxBytes: 5 * 1024 * 1024 },
+  "application/pdf": { label: "PDF", maxBytes: 10 * 1024 * 1024 },
+  "text/csv": { label: "CSV", maxBytes: 512 * 1024 },
+};
+const MAX_FILES = 5;
+
+/** Windows reports CSV files as Excel, or as nothing at all. */
+function typeOf(file: File) {
+  if (/\.csv$/i.test(file.name)) return "text/csv";
+  return file.type;
+}
+
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 function Composer({
   disabled,
   busy,
@@ -684,11 +742,15 @@ function Composer({
 }: {
   disabled: boolean;
   busy: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachments: AgentAttachment[]) => void;
   onStop: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [files, setFiles] = useState<AgentAttachment[]>([]);
+  const [problem, setProblem] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
 
   // Grows with the text, up to about eight lines, then scrolls.
   useLayoutEffect(() => {
@@ -698,10 +760,35 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [draft]);
 
+  const add = async (list: FileList | File[]) => {
+    setProblem(null);
+    const next = [...files];
+    for (const file of Array.from(list)) {
+      const type = typeOf(file);
+      const rule = ACCEPT[type];
+      if (!rule) {
+        setProblem(`${file.name}: only images (PNG, JPEG, WebP, GIF), PDFs and CSV files can be attached.`);
+        continue;
+      }
+      if (file.size > rule.maxBytes) {
+        setProblem(`${file.name} is larger than ${rule.maxBytes / 1024 / 1024} MB.`);
+        continue;
+      }
+      if (next.length >= MAX_FILES) {
+        setProblem(`At most ${MAX_FILES} files per message.`);
+        break;
+      }
+      next.push({ name: file.name, type, data: await readBase64(file) });
+    }
+    setFiles(next);
+  };
+
   const submit = () => {
-    if (!draft.trim() || busy || disabled) return;
-    onSend(draft);
+    if ((!draft.trim() && files.length === 0) || busy || disabled) return;
+    onSend(draft, files);
     setDraft("");
+    setFiles([]);
+    setProblem(null);
   };
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
@@ -712,13 +799,84 @@ function Composer({
   };
 
   return (
-    <footer className="border-t border-border p-3">
-      <div className="flex items-end gap-2 rounded-2xl border border-border-strong bg-surface px-3 py-2 focus-within:border-cyan">
+    <footer
+      className="border-t border-border p-3"
+      onDragOver={(event) => {
+        if (disabled) return;
+        event.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragging(false);
+        if (!disabled && event.dataTransfer.files.length) void add(event.dataTransfer.files);
+      }}
+    >
+      {files.length > 0 ? (
+        <ul className="mb-2 flex flex-wrap gap-1.5">
+          {files.map((file, index) => (
+            <li
+              key={`${file.name}-${index}`}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-bg-subtle py-1 pl-3 pr-1 text-xs text-text"
+            >
+              <span className="font-mono text-[0.6875rem] text-text-dim">{ACCEPT[file.type]?.label}</span>
+              <span className="truncate">{file.name}</span>
+              <button
+                type="button"
+                onClick={() => setFiles(files.filter((_, i) => i !== index))}
+                aria-label={`Remove ${file.name}`}
+                className="inline-flex h-5 w-5 items-center justify-center rounded-full text-text-dim hover:text-text"
+              >
+                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+                  <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+                </svg>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {problem ? <p className="mb-2 text-xs text-text-dim">{problem}</p> : null}
+      <div
+        className={cn(
+          "flex items-end gap-2 rounded-2xl border bg-surface px-2 py-2 focus-within:border-cyan",
+          dragging ? "border-cyan bg-cyan-glow" : "border-border-strong",
+        )}
+      >
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.csv,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/csv"
+          className="hidden"
+          onChange={(event) => {
+            if (event.target.files) void add(event.target.files);
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => picker.current?.click()}
+          disabled={disabled}
+          aria-label="Attach images, a PDF or a CSV"
+          title="Attach images, a PDF or a CSV (or drop them here)"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-text-dim transition-colors duration-200 hover:bg-surface-hover hover:text-cyan-dark disabled:opacity-40"
+        >
+          <svg viewBox="0 0 16 16" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M10.5 4.5 5.8 9.2a1.4 1.4 0 0 0 2 2l5-5a2.8 2.8 0 0 0-4-4l-5 5a4.2 4.2 0 0 0 6 6l4.2-4.2" />
+          </svg>
+        </button>
         <textarea
           ref={box}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={(event) => {
+            if (event.clipboardData.files.length) {
+              event.preventDefault();
+              void add(event.clipboardData.files);
+            }
+          }}
           disabled={disabled}
           rows={1}
           dir="auto"
@@ -740,7 +898,7 @@ function Composer({
           <button
             type="button"
             onClick={submit}
-            disabled={disabled || !draft.trim()}
+            disabled={disabled || (!draft.trim() && files.length === 0)}
             aria-label="Send"
             title="Send (Enter). New line: Shift + Enter"
             className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-cyan text-surface transition-opacity duration-200 disabled:opacity-40"

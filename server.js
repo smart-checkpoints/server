@@ -812,7 +812,12 @@ function requestDistanceFromDriver(projectId, fromNode, toNode) {
 
 const db = createDatabase(path.join(__dirname, "database.db"));
 
-app.use(express.json());
+// 100 KB for every route, except a Sayes run, which can carry attachments
+// (images, a PDF, a CSV) and parses its own body with a larger limit.
+const jsonBody = express.json();
+app.use((req, res, next) =>
+  req.method === "POST" && /^\/project\/\d+\/agent\/runs\/?$/.test(req.path) ? next() : jsonBody(req, res, next),
+);
 
 // --- The operator console ---
 //

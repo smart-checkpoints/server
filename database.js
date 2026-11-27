@@ -443,6 +443,20 @@ function createTables(db) {
       FOREIGN KEY(project_id) REFERENCES projects(project_id)
   )`);
 
+  // Restore points: the checkpoint network (positions, edges, limits) as it
+  // was at a moment, so it can be put back. Never violations or evidence:
+  // those are records, and a restore never touches them.
+  db.run(`CREATE TABLE IF NOT EXISTS restore_points (
+      restore_point_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id       INTEGER NOT NULL,
+      name             TEXT NOT NULL,
+      origin           TEXT NOT NULL,
+      run_id           TEXT,
+      snapshot         TEXT NOT NULL,
+      created_at       TEXT NOT NULL,
+      FOREIGN KEY(project_id) REFERENCES projects(project_id)
+  )`);
+
   // Migration for existing databases
   db.run(`CREATE TABLE IF NOT EXISTS traversals (
       traversal_id  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1567,6 +1581,56 @@ const statements = {
           actionId,
         ],
         (err) => (err ? reject(err) : resolve()),
+      );
+    });
+  },
+
+  /** Keeps the newest RESTORE_POINTS_KEPT per project; older ones are dropped. */
+  insertRestorePoint: (point, db) => {
+    return new Promise((resolve, reject) => {
+      db.run(
+        "INSERT INTO restore_points (project_id, name, origin, run_id, snapshot, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        [point.projectId, point.name, point.origin, point.runId ?? null, JSON.stringify(point.snapshot), new Date().toISOString()],
+        function (err) {
+          if (err) return reject(err);
+          const id = this.lastID;
+          db.run(
+            "DELETE FROM restore_points WHERE project_id = ? AND restore_point_id NOT IN " +
+              "(SELECT restore_point_id FROM restore_points WHERE project_id = ? ORDER BY restore_point_id DESC LIMIT 50)",
+            [point.projectId, point.projectId],
+            () => resolve(id),
+          );
+        },
+      );
+    });
+  },
+
+  listRestorePoints: (projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.all(
+        "SELECT restore_point_id, name, origin, run_id, created_at, snapshot FROM restore_points " +
+          "WHERE project_id = ? ORDER BY restore_point_id DESC",
+        [projectId],
+        (err, rows) => {
+          if (err) return reject(err);
+          resolve(
+            (rows || []).map(({ snapshot, ...row }) => {
+              const parsed = JSON.parse(snapshot);
+              return { ...row, cameras: parsed.nodes.length, edges: parsed.edges.length };
+            }),
+          );
+        },
+      );
+    });
+  },
+
+  getRestorePoint: (restorePointId, projectId, db) => {
+    return new Promise((resolve, reject) => {
+      db.get(
+        "SELECT restore_point_id, name, origin, run_id, created_at, snapshot FROM restore_points " +
+          "WHERE restore_point_id = ? AND project_id = ?",
+        [restorePointId, projectId],
+        (err, row) => (err ? reject(err) : resolve(row ? { ...row, snapshot: JSON.parse(row.snapshot) } : null)),
       );
     });
   },

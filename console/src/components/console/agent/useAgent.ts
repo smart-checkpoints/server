@@ -7,6 +7,7 @@ import {
   getAgentInfo,
   streamRun,
   type AgentApiCall,
+  type AgentAttachment,
   type AgentEvent,
   type AgentInfo,
   type AgentTarget,
@@ -45,6 +46,8 @@ export type AgentAction = {
 export type AgentTurn = {
   id: number;
   request: string;
+  /** Names and types only: the files themselves are not kept in the browser. */
+  attachments?: { name: string; type: string }[];
   reply: string;
   notes: string;
   actions: AgentAction[];
@@ -56,6 +59,10 @@ export type AgentTurn = {
   finishedAt?: number;
   model?: string;
   modelTurns?: number;
+  /** Saved before this request changed anything; restoring it undoes the request. */
+  restorePoint?: { id: number; name: string };
+  /** PDF reports written during this request. */
+  reports?: { id: string; title: string; filename: string; pages: number }[];
 };
 
 /** One conversation, as kept in this browser. */
@@ -178,15 +185,25 @@ export function useAgent(projectId: number, apiKey: string) {
   );
 
   const send = useCallback(
-    async (message: string, options: { retry?: boolean } = {}) => {
-      const text = message.trim();
+    async (message: string, options: { retry?: boolean; attachments?: AgentAttachment[] } = {}) => {
+      const files = options.attachments ?? [];
+      const text = message.trim() || (files.length ? "Here are the attached files." : "");
       if (!text || busy) return;
 
       turnSeq.current = Math.max(turnSeq.current, ...turns.map((t) => t.id)) + 1;
       const turnId = turnSeq.current;
       setTurns((current) => [
         ...current,
-        { id: turnId, request: text, reply: "", notes: "", actions: [], status: "running", startedAt: Date.now() },
+        {
+          id: turnId,
+          request: text,
+          ...(files.length ? { attachments: files.map((f) => ({ name: f.name, type: f.type })) } : {}),
+          reply: "",
+          notes: "",
+          actions: [],
+          status: "running",
+          startedAt: Date.now(),
+        },
       ]);
       setBusy(true);
       setHighlights(NO_HIGHLIGHTS);
@@ -283,6 +300,18 @@ export function useAgent(projectId: number, apiKey: string) {
               finishedAt: Date.now(),
             }));
             break;
+          case "report":
+            updateTurn(turnId, (turn) => ({
+              ...turn,
+              reports: [
+                ...(turn.reports ?? []),
+                { id: event.data.report_id, title: event.data.title, filename: event.data.filename, pages: event.data.pages },
+              ],
+            }));
+            break;
+          case "restore_point":
+            updateTurn(turnId, (turn) => ({ ...turn, restorePoint: { id: event.data.restore_point_id, name: event.data.name } }));
+            break;
           case "highlight":
             setHighlights({
               connectionIds: event.data.connection_ids,
@@ -320,7 +349,12 @@ export function useAgent(projectId: number, apiKey: string) {
         await streamRun(
           projectId,
           apiKey,
-          { message: text, session_id: sessionId.current, ...(options.retry ? { retry: true } : {}) },
+          {
+            message: text,
+            session_id: sessionId.current,
+            ...(options.retry ? { retry: true } : {}),
+            ...(files.length ? { attachments: files } : {}),
+          },
           onEvent,
           abort.signal,
         );

@@ -33,6 +33,7 @@
     "@anthropic-ai/sdk": "^1.14.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "pdfkit": "^0.17.2",
     "socket.io": "^4.8.3",
     "sqlite3": "^5.1.7",
     "ws": "^8.19.0"

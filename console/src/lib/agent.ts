@@ -30,6 +30,9 @@ export type AgentUiControl =
   | { action: "view"; view: "graph" | "map" }
   | { action: "panel"; panel: "quality" | "violations" | "none" };
 
+/** A file sent with a message: base64 data, at most 5 per message. */
+export type AgentAttachment = { name: string; type: string; data: string };
+
 export type AgentApiCall = { method: string; path: string; status: number; ms: number };
 
 export type AgentInfo = {
@@ -90,6 +93,10 @@ export type AgentEvents = {
   };
   highlight: { connection_ids: number[]; node_ids: number[]; caption: string };
   "ui.control": AgentUiControl;
+  /** Saved before the run's first change: undoing the run restores it. */
+  restore_point: { restore_point_id: number; name: string };
+  /** A PDF report Sayes wrote, downloadable for an hour. */
+  report: { report_id: string; title: string; filename: string; pages: number };
   reply: { text: string };
   "run.limit": { kind: string; used: number; limit: number };
   "run.error": { message: string };
@@ -138,6 +145,79 @@ export function getAgentInfo(projectId: number, apiKey: string, signal?: AbortSi
   );
 }
 
+export type RestorePoint = {
+  restore_point_id: number;
+  name: string;
+  /** "auto" before a Sayes request or a restore, "operator" or "agent" when asked for. */
+  origin: string;
+  created_at: string;
+  cameras: number;
+  edges: number;
+};
+
+export type RestorePreview = { restore_point_id: number; name: string; empty: boolean; lines: string[] };
+
+export type RestoreResult = {
+  restored: boolean;
+  created_cameras?: { was: number; now: number }[];
+  deleted_cameras?: number[];
+  moved?: number;
+  deleted_edges?: number;
+  created_edges?: number;
+  limits?: number;
+  failed?: string[];
+  kept?: { edges: { pair: string; violations: number }[]; cameras: number[] };
+  lines?: string[];
+};
+
+export function listRestorePoints(projectId: number, apiKey: string) {
+  return fetch(`/project/${projectId}/restore-points`, { headers: { "x-api-key": apiKey } }).then((r) => json<RestorePoint[]>(r));
+}
+
+export function saveRestorePoint(projectId: number, apiKey: string, name: string) {
+  return fetch(`/project/${projectId}/restore-points`, {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "content-type": "application/json" },
+    body: JSON.stringify({ name }),
+  }).then((r) => json<{ restore_point_id: number }>(r));
+}
+
+export function previewRestore(projectId: number, apiKey: string, id: number) {
+  return fetch(`/project/${projectId}/restore-points/${id}/preview`, { headers: { "x-api-key": apiKey } }).then((r) =>
+    json<RestorePreview>(r),
+  );
+}
+
+export function restoreTo(projectId: number, apiKey: string, id: number) {
+  return fetch(`/project/${projectId}/restore-points/${id}/restore`, {
+    method: "POST",
+    headers: { "x-api-key": apiKey },
+  }).then((r) => json<RestoreResult>(r));
+}
+
+/** Fetches a report with the operator key and hands it to the browser as a download. */
+export async function downloadReport(projectId: number, apiKey: string, reportId: string, filename: string) {
+  const response = await fetch(`/project/${projectId}/agent/reports/${reportId}`, { headers: { "x-api-key": apiKey } });
+  if (!response.ok) {
+    const text = await response.text();
+    let message = `HTTP ${response.status}`;
+    try {
+      message = JSON.parse(text).error || message;
+    } catch {
+      // not JSON
+    }
+    throw new Error(message);
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
 export function getAudit(projectId: number, apiKey: string, limit = 100) {
   return fetch(`/project/${projectId}/agent/audit?limit=${limit}`, { headers: { "x-api-key": apiKey } }).then(
     (r) => json<AuditRow[]>(r),
@@ -167,7 +247,7 @@ export function cancelRun(projectId: number, apiKey: string, runId: string) {
 export async function streamRun(
   projectId: number,
   apiKey: string,
-  body: { message: string; session_id?: string | null; retry?: boolean },
+  body: { message: string; session_id?: string | null; retry?: boolean; attachments?: AgentAttachment[] },
   onEvent: (event: AgentEvent) => void,
   signal: AbortSignal,
 ): Promise<void> {

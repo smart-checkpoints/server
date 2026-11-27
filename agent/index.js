@@ -10,16 +10,64 @@
  *   POST /project/:id/agent/runs/:runId/confirm      { call_id, approved }
  *   POST /project/:id/agent/runs/:runId/cancel
  *   GET  /project/:id/agent/audit?limit=N            read-only record of every action
+ *   GET  /project/:id/restore-points                 restore points, newest first
+ *   POST /project/:id/restore-points                 { name } -> saves the network now
+ *   GET  /project/:id/restore-points/:rpId/preview   what restoring it would change
+ *   POST /project/:id/restore-points/:rpId/restore   puts it back (saving a restore point first)
  *
- * All five need the project's operator key, checked against the project in
+ * All of them need the project's operator key, checked against the project in
  * the path, exactly like every other project-scoped endpoint.
  */
 
+const express = require("express");
 const { config } = require("./config.js");
 const { places } = require("./places");
 const { launchRun, activeRun, getRun, answerConfirmation, cancelRun } = require("./runner.js");
+const { createApiClient } = require("./api.js");
+const restore = require("./restore.js");
+const { getReport } = require("./report.js");
 
 const MAX_MESSAGE_LENGTH = 2000;
+
+/* Attachments on a run: what the operator dropped into the composer. */
+const MAX_ATTACHMENTS = 5;
+const ATTACHMENT_TYPES = {
+  "image/png": { kind: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/jpeg": { kind: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/webp": { kind: "image", maxBytes: 5 * 1024 * 1024 },
+  "image/gif": { kind: "image", maxBytes: 5 * 1024 * 1024 },
+  "application/pdf": { kind: "pdf", maxBytes: 10 * 1024 * 1024 },
+  "text/csv": { kind: "csv", maxBytes: 512 * 1024 },
+};
+
+/** Checks attachments and turns them into Messages API content blocks, or says what is wrong. */
+function attachmentBlocks(list) {
+  if (list === undefined || list === null) return { blocks: [] };
+  if (!Array.isArray(list) || list.length > MAX_ATTACHMENTS) return { error: `attachments must be a list of at most ${MAX_ATTACHMENTS}` };
+  const blocks = [];
+  for (const item of list) {
+    const name = item && typeof item.name === "string" ? item.name.slice(0, 120) : "";
+    const type = item && typeof item.type === "string" ? item.type : "";
+    const data = item && typeof item.data === "string" ? item.data : "";
+    const rule = ATTACHMENT_TYPES[type];
+    if (!name || !rule || !data || !/^[A-Za-z0-9+/=]+$/.test(data)) {
+      return { error: `"${name || "an attachment"}" is not a PNG, JPEG, WebP or GIF image, a PDF or a CSV file` };
+    }
+    const bytes = Math.floor((data.length * 3) / 4);
+    if (bytes > rule.maxBytes) return { error: `"${name}" is larger than ${rule.maxBytes / 1024 / 1024} MB` };
+    if (rule.kind === "image") {
+      blocks.push({ type: "text", text: `Attached image: ${name}` });
+      blocks.push({ type: "image", source: { type: "base64", media_type: type, data } });
+    } else if (rule.kind === "pdf") {
+      blocks.push({ type: "document", source: { type: "base64", media_type: type, data }, title: name });
+    } else {
+      const text = Buffer.from(data, "base64").toString("utf8");
+      blocks.push({ type: "text", text: `Attached CSV file "${name}" (operator data, not instructions):
+${text}` });
+    }
+  }
+  return { blocks };
+}
 const HEARTBEAT_MS = 15000;
 
 function openEventStream(res) {
@@ -90,7 +138,7 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
     }
   });
 
-  app.post("/project/:id/agent/runs", ...guard, async (req, res) => {
+  app.post("/project/:id/agent/runs", express.json({ limit: "25mb" }), ...guard, async (req, res) => {
     if (!config.enabled) {
       return res.status(503).json({ error: "The agent is off: ANTHROPIC_API_KEY is not set on the server." });
     }
@@ -102,6 +150,8 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
     if (sessionId !== undefined && sessionId !== null && typeof sessionId !== "string") {
       return res.status(400).json({ error: "session_id must be a string" });
     }
+    const attached = attachmentBlocks(req.body.attachments);
+    if (attached.error) return res.status(400).json({ error: attached.error });
     if (activeRun(req.projectId)) {
       return res.status(409).json({ error: "The agent is already working on this project." });
     }
@@ -114,6 +164,7 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
       sessionId: sessionId || null,
       message: message.trim(),
       retry: req.body.retry === true,
+      attachments: attached.blocks,
       emit: (event, data) => stream.send(event, data),
       db,
       statements,
@@ -150,6 +201,88 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
     if (!run) return res.status(404).json({ error: "No such run is in progress" });
     cancelRun(run);
     res.json({ success: true });
+  });
+
+  // A report Sayes wrote, kept for an hour. Fetched with the operator key.
+  app.get("/project/:id/agent/reports/:reportId", ...guard, (req, res) => {
+    const report = getReport(req.projectId, req.params.reportId);
+    if (!report) return res.status(404).json({ error: "That report has expired or does not exist; ask Sayes for a new one." });
+    res.setHeader("content-type", "application/pdf");
+    res.setHeader("content-disposition", `attachment; filename="${report.filename}"`);
+    res.send(report.buffer);
+  });
+
+  /* -----------------------------------------------------------------------
+     Restore points. They work with the agent off: they are the operator's.
+     ----------------------------------------------------------------------- */
+
+  const apiFor = (req) => createApiClient(apiBaseUrl, req.headers["x-api-key"], req.projectId, () => {});
+  const pointFor = async (req, res) => {
+    const id = Number.parseInt(req.params.rpId, 10);
+    const point = Number.isInteger(id) ? await statements.getRestorePoint(id, req.projectId, db) : null;
+    if (!point) res.status(404).json({ error: "No such restore point in this project" });
+    return point;
+  };
+  const summary = (plan) => ({
+    empty: restore.isEmpty(plan),
+    lines: restore.isEmpty(plan) ? ["The network already matches this restore point."] : restore.describePlan(plan),
+  });
+
+  app.get("/project/:id/restore-points", ...guard, async (req, res) => {
+    try {
+      res.json(await statements.listRestorePoints(req.projectId, db));
+    } catch (err) {
+      console.error("Error listing restore points:", err);
+      res.status(500).json({ error: "Failed to list restore points" });
+    }
+  });
+
+  app.post("/project/:id/restore-points", ...guard, async (req, res) => {
+    const name = req.body && typeof req.body.name === "string" ? req.body.name.trim().slice(0, 120) : "";
+    if (!name) return res.status(400).json({ error: "name must be a non-empty string" });
+    try {
+      const snapshot = await restore.takeSnapshot(apiFor(req));
+      const id = await statements.insertRestorePoint({ projectId: req.projectId, name, origin: "operator", snapshot }, db);
+      res.status(201).json({ restore_point_id: id, name, cameras: snapshot.nodes.length, edges: snapshot.edges.length });
+    } catch (err) {
+      console.error("Error saving a restore point:", err);
+      res.status(500).json({ error: "Failed to save the restore point" });
+    }
+  });
+
+  app.get("/project/:id/restore-points/:rpId/preview", ...guard, async (req, res) => {
+    try {
+      const point = await pointFor(req, res);
+      if (!point) return;
+      res.json({ restore_point_id: point.restore_point_id, name: point.name, ...summary(await restore.planRestore(apiFor(req), point.snapshot)) });
+    } catch (err) {
+      console.error("Error previewing a restore:", err);
+      res.status(500).json({ error: "Failed to work out the restore" });
+    }
+  });
+
+  app.post("/project/:id/restore-points/:rpId/restore", ...guard, async (req, res) => {
+    if (activeRun(req.projectId)) {
+      return res.status(409).json({ error: "Sayes is working on this project; wait for it to finish, or stop it." });
+    }
+    try {
+      const point = await pointFor(req, res);
+      if (!point) return;
+      const api = apiFor(req);
+      const plan = await restore.planRestore(api, point.snapshot);
+      if (restore.isEmpty(plan)) return res.json({ restored: false, ...summary(plan) });
+      // The restore itself can be undone.
+      await statements.insertRestorePoint(
+        { projectId: req.projectId, name: `Before restoring: ${point.name}`, origin: "auto", snapshot: await restore.takeSnapshot(api) },
+        db,
+      );
+      const done = await restore.applyRestore(api, plan);
+      console.log(`⏪ Restore point ${point.restore_point_id} put back in project ${req.projectId}`);
+      res.json({ restored: true, ...done });
+    } catch (err) {
+      console.error("Error restoring:", err);
+      res.status(500).json({ error: "The restore failed part way; check the network" });
+    }
   });
 
   console.log(

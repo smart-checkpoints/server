@@ -19,6 +19,7 @@ const Anthropic = require("@anthropic-ai/sdk").default;
 const { config } = require("./config.js");
 const { SYSTEM_PROMPT } = require("./prompt.js");
 const { BY_NAME, definitions, ToolError } = require("./tools.js");
+const { takeSnapshot } = require("./restore.js");
 const { createApiClient, ApiError } = require("./api.js");
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
@@ -26,10 +27,12 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 /** The tools whose calls the console draws a cursor for (they have a target). */
 const CURSOR_TOOLS = new Set([
   "create_checkpoint",
+  "import_checkpoints",
   "create_edge",
   "split_edge",
   "delete_edges",
   "delete_checkpoints",
+  "restore_to",
   "set_speed_limit",
   "move_checkpoint_by",
   "move_checkpoint_to",
@@ -40,6 +43,46 @@ const CURSOR_TOOLS = new Set([
   "switch_view",
   "open_panel",
 ]);
+
+/** Tools that change the network. The first one in a run saves a restore point. */
+const CHANGING_TOOLS = new Set([
+  "create_checkpoint",
+  "import_checkpoints",
+  "create_edge",
+  "split_edge",
+  "delete_edges",
+  "delete_checkpoints",
+  "set_speed_limit",
+  "move_checkpoint_by",
+  "move_checkpoint_to",
+  "restore_to",
+]);
+
+/**
+ * The network as it was before this run changed anything, saved once per
+ * run, so the operator can undo the whole run. Parallel calls share it.
+ */
+function ensureRestorePoint(run, api) {
+  if (!run.restorePoint) {
+    run.restorePoint = (async () => {
+      try {
+        const snapshot = await takeSnapshot(api);
+        const request = run.userRequest.length > 80 ? `${run.userRequest.slice(0, 79)}…` : run.userRequest;
+        const name = `Before: ${request}`;
+        const id = await run.statements.insertRestorePoint(
+          { projectId: run.projectId, name, origin: "auto", runId: run.id, snapshot },
+          run.db,
+        );
+        run.emit("restore_point", { restore_point_id: id, name });
+        return id;
+      } catch (err) {
+        console.error("🤖 Could not save a restore point before the run:", err.message);
+        return null;
+      }
+    })();
+  }
+  return run.restorePoint;
+}
 
 let client = null;
 function anthropic() {
@@ -221,9 +264,18 @@ async function executeToolCall(run, block, lane, leadMs = config.cursorLeadMs) {
     signal: run.signal,
     emit,
     progress: (data) => emit("tool.progress", { call_id: block.id, ...data }),
+    projectId: run.projectId,
+    // Restore points live in this server's database, not behind the REST API.
+    restorePoints: {
+      list: () => run.statements.listRestorePoints(run.projectId, run.db),
+      get: (id) => run.statements.getRestorePoint(id, run.projectId, run.db),
+      save: (name, snapshot, origin = "agent") =>
+        run.statements.insertRestorePoint({ projectId: run.projectId, name, origin, runId: run.id, snapshot }, run.db),
+    },
   };
 
   try {
+    if (CHANGING_TOOLS.has(block.name)) await ensureRestorePoint(run, ctx.api);
     const prepared = await tool.prepare(checked.value, ctx);
     emit("tool.started", {
       call_id: block.id,
@@ -392,7 +444,7 @@ function describeApiError(err) {
  * Runs one operator message to completion. `emit(event, data)` streams to
  * the console. Never throws: every failure ends in `run.error`.
  */
-async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, retry, emit, db, statements }) {
+async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, retry, attachments = [], emit, db, statements }) {
   const session = getOrCreateSession(projectId, sessionId);
   const controller = new AbortController();
   const run = {
@@ -440,13 +492,15 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, ret
 
   // A retry after a failed run: some of the request may already be done, and
   // the model is told so rather than being sent the same words again.
-  session.messages.push({
-    role: "user",
-    content: retry
-      ? `(The previous attempt at this request stopped with an error before it finished. Some of it may already be done: check the network first, then finish only what is left.)
+  const text = retry
+    ? `(The previous attempt at this request stopped with an error before it finished. Some of it may already be done: check the network first, then finish only what is left.)
 
 ${message}`
-      : message,
+    : message;
+  // Attachments go before the words, so the request reads as being about them.
+  session.messages.push({
+    role: "user",
+    content: attachments.length > 0 ? [...attachments, { type: "text", text }] : text,
   });
 
   const stop = (kind, used, limit) => {

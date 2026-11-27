@@ -69,6 +69,29 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
       outcome = done.length === 1 ? `Deleted camera ${done[0]}` : `Deleted ${done.length} cameras`;
       break;
     }
+    case "import_checkpoints": {
+      const n = Array.isArray(input.points) ? input.points.length : 0;
+      const made = Array.isArray(result.created) ? result.created.length : 0;
+      title = `Placing ${n} cameras${typeof input.source === "string" && input.source ? ` from ${input.source}` : ""}`;
+      outcome = `Placed ${made} camera${made === 1 ? "" : "s"}`;
+      break;
+    }
+    case "list_restore_points":
+      title = "Reading the restore points";
+      outcome = "Read the restore points";
+      break;
+    case "save_restore_point":
+      title = "Saving a restore point";
+      outcome = `Saved restore point “${typeof input.name === "string" ? input.name : ""}”`;
+      break;
+    case "restore_to":
+      title = "Restoring the network";
+      outcome = typeof result.restored === "string" ? `Restored “${result.restored}”` : "Restored";
+      break;
+    case "generate_report":
+      title = "Writing the report";
+      outcome = "Report ready";
+      break;
     case "create_checkpoint":
       title = "Placing a checkpoint";
       outcome = `Placed camera ${num(result.camera) ?? "?"}`;

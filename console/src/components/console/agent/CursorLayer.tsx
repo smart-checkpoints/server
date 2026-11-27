@@ -9,6 +9,7 @@ import { Director, type CursorView, type DirectorEnv, type Rect } from "./cursor
 import { Spring } from "./cursors/motion";
 import { tuning } from "./cursors/tuning";
 import CursorLab, { type LabControls } from "./cursors/CursorLab";
+import { changesOf, hadCursorWork, maskFor, type ReplayMask } from "./cursors/replayMask";
 
 type CursorLayerProps = {
   /** The current turn's actions: the words on the name tags. Motion comes from `subscribe`. */
@@ -22,6 +23,12 @@ type CursorLayerProps = {
   cameraOf: CameraOf;
   info: AgentInfo | null;
   presentation: boolean;
+  /**
+   * While a run is replayed, how the page should draw the graph: as it was
+   * before the run, with each change landing as its cursor clicks. Null when
+   * no replay is running. Screen only; real data is never touched.
+   */
+  onReplayMask?: (mask: ReplayMask | null) => void;
 };
 
 type Recorded = { t: number; event: AgentEvent };
@@ -45,7 +52,78 @@ class VirtualClock {
   }
 }
 
-type Replay = { director: Director; events: Recorded[]; next: number; clock: VirtualClock; start: number };
+type Replay = {
+  director: Director;
+  events: Recorded[];
+  next: number;
+  clock: VirtualClock;
+  start: number;
+  /** The actions as they stood at this point of the run, for the name tags. */
+  actions: Map<string, AgentAction>;
+  changes: ReturnType<typeof changesOf>;
+  landed: Set<string>;
+};
+
+/** How long a replay lets a cursor wait for an approval, however long the operator took. */
+const REPLAY_APPROVAL_MS = 1200;
+
+/**
+ * A recorded run with the operator's thinking time cut out: a wait between
+ * "needs your OK" and the answer longer than REPLAY_APPROVAL_MS is shortened
+ * to it, and everything after moves up. The agent's own pauses are kept.
+ */
+function withoutApprovalWaits(events: Recorded[]): Recorded[] {
+  const asked = new Map<string, number>();
+  let cut = 0;
+  return events.map((r) => {
+    const t = r.t - cut;
+    if (r.event.name === "tool.confirm_required") asked.set(r.event.data.call_id, t);
+    if (r.event.name === "tool.confirmed") {
+      const at = asked.get(r.event.data.call_id);
+      if (at !== undefined && t - at > REPLAY_APPROVAL_MS) {
+        cut += t - at - REPLAY_APPROVAL_MS;
+        return { ...r, t: at + REPLAY_APPROVAL_MS };
+      }
+    }
+    return { ...r, t };
+  });
+}
+
+/** Folds one event into a replay's actions, the way useAgent does live. */
+function foldAction(actions: Map<string, AgentAction>, e: AgentEvent) {
+  const update = (id: string, change: Partial<AgentAction>) => {
+    const a = actions.get(id);
+    if (a) actions.set(id, { ...a, ...change });
+  };
+  switch (e.name) {
+    case "tool.started":
+      actions.set(e.data.call_id, {
+        callId: e.data.call_id,
+        tool: e.data.tool,
+        input: e.data.input,
+        lane: e.data.lane,
+        target: e.data.target,
+        status: "working",
+        startedAt: 0,
+      });
+      break;
+    case "tool.progress":
+      update(e.data.call_id, { status: "measuring" });
+      break;
+    case "tool.confirm_required":
+      update(e.data.call_id, { status: "confirm" });
+      break;
+    case "tool.confirmed":
+      update(e.data.call_id, { status: e.data.outcome === "approved" ? "working" : "declined" });
+      break;
+    case "tool.finished":
+      update(e.data.call_id, {
+        status: e.data.ok ? "done" : e.data.declined ? "declined" : "failed",
+        result: e.data.result,
+      });
+      break;
+  }
+}
 
 const SLOTS = LANES.length;
 const RIPPLES = [0, 1, 2];
@@ -188,7 +266,17 @@ function tagText(action: AgentAction | undefined, cameraOf: CameraOf) {
  * choreographed by `Director` from the live event stream and drawn here
  * every frame without going through React.
  */
-export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs, cameraOf, info, presentation }: CursorLayerProps) {
+export default function CursorLayer({
+  actions,
+  subscribe,
+  canvas,
+  origin,
+  leadMs,
+  cameraOf,
+  info,
+  presentation,
+  onReplayMask,
+}: CursorLayerProps) {
   const slots = useRef<Slot[]>(Array.from({ length: SLOTS }, emptySlot));
   const labels = useRef({ actions, cameraOf });
   const lead = useRef(leadMs);
@@ -211,6 +299,18 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
     lead.current = leadMs;
   }, [leadMs]);
 
+  const maskSink = useRef(onReplayMask);
+  useEffect(() => {
+    maskSink.current = onReplayMask;
+  }, [onReplayMask]);
+
+  /** Ends a replay and gives the page its real graph back. */
+  const endReplay = useCallback(() => {
+    if (!replay.current) return;
+    replay.current = null;
+    maskSink.current?.(null);
+  }, []);
+
   const live = useCallback(() => {
     if (!env.current) env.current = makeEnv(canvas, origin);
     if (!director.current) director.current = new Director(env.current);
@@ -219,7 +319,9 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
 
   /* Drawing one frame from the director's views; `dt` is this frame's length in seconds. */
   const paint = useCallback((views: CursorView[], dt: number) => {
-    const { actions: list, cameraOf: camOf } = labels.current;
+    const { cameraOf: camOf } = labels.current;
+    // A replay's tags say what was happening at that point, not how it ended.
+    const list = replay.current ? [...replay.current.actions.values()] : labels.current.actions;
     const byId = new Map(list.map((a) => [a.callId, a]));
     const placed: Rect[] = [];
     const vw = window.innerWidth;
@@ -382,12 +484,13 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
       now = r.clock.now();
       while (r.next < r.events.length && r.start + r.events[r.next].t <= now) {
         const e = r.events[r.next];
+        foldAction(r.actions, e.event);
         r.director.handle(e.event, r.start + e.t);
         r.next += 1;
       }
       views = r.director.frame(now);
       more = r.next < r.events.length || r.director.active;
-      if (!more) replay.current = null;
+      if (!more) endReplay();
     } else {
       const d = live();
       now = performance.now();
@@ -405,7 +508,7 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
       raf.current = 0;
       lastFrame.current = null;
     }
-  }, [paint, live]);
+  }, [paint, live, endReplay]);
 
   useEffect(() => {
     loopRef.current = loop;
@@ -436,7 +539,7 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
       let event = incoming;
       const now = performance.now();
       if (event.name === "run.started") {
-        replay.current = null;
+        endReplay();
         runPoints = [];
         recording.current = { start: now, events: [] };
       }
@@ -462,9 +565,13 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
       const rec = recording.current;
       if (rec) rec.events.push({ t: now - rec.start, event });
       if (event.name === "run.finished" && rec) {
-        lastRun.current = rec.events;
+        // Only a run a cursor took part in is worth replaying; a reply with
+        // no actions keeps the last one that had some.
+        if (hadCursorWork(rec.events.map((r) => r.event))) {
+          lastRun.current = rec.events;
+          setHasRun(true);
+        }
         recording.current = null;
-        setHasRun(true);
       }
 
       live().handle(event, now);
@@ -476,7 +583,7 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
       unsubscribe();
       if (frameTimer !== null) window.clearTimeout(frameTimer);
     };
-  }, [subscribe, canvas, kick, live]);
+  }, [subscribe, canvas, kick, live, endReplay]);
 
   useEffect(() => () => cancelAnimationFrame(raf.current), []);
 
@@ -501,16 +608,39 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
     canReplay: hasRun,
     replaying: () => Boolean(replay.current),
     replay: () => {
-      const events = lastRun.current;
-      if (!events) return;
+      const recorded = lastRun.current;
+      if (!recorded) return;
+      const events = withoutApprovalWaits(recorded);
       live().clear();
       const clock = new VirtualClock();
       clock.rate = tuning().slowmo;
-      replay.current = { director: new Director(env.current!), events, next: 0, clock, start: clock.now() + 50 };
+      const changes = changesOf(events.map((r) => r.event));
+      const landed = new Set<string>();
+      // The replay's director tells us each click, so its change lands then.
+      const replayEnv: DirectorEnv = {
+        ...env.current!,
+        clicked: (callId) => {
+          if (!changes.has(callId) || landed.has(callId)) return;
+          landed.add(callId);
+          maskSink.current?.(maskFor(changes, landed));
+        },
+      };
+      replay.current = {
+        director: new Director(replayEnv),
+        events,
+        next: 0,
+        clock,
+        start: clock.now() + 50,
+        actions: new Map(),
+        changes,
+        landed,
+      };
+      // Back to the screen as it was before the run.
+      maskSink.current?.(maskFor(changes, landed));
       kick();
     },
     stopReplay: () => {
-      replay.current = null;
+      endReplay();
       kick();
     },
     setRate: (rate) => {

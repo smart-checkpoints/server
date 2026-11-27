@@ -29,6 +29,7 @@ import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
 import AgentPanel from "@/components/console/agent/AgentPanel";
 import CursorLayer from "@/components/console/agent/CursorLayer";
+import type { ReplayMask } from "@/components/console/agent/cursors/replayMask";
 import { useAgent } from "@/components/console/agent/useAgent";
 import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
@@ -71,6 +72,35 @@ export default function ProjectConsolePage() {
 
   const [nodes, setNodes] = useState<CheckpointNode[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
+
+  /* A Cursor Lab replay draws the graph as it was before the replayed run,
+     each change landing as its cursor clicks. Screen only: `nodes` and
+     `connections` stay the real data, and only the canvas sees the mask. */
+  const [replayMask, setReplayMask] = useState<ReplayMask | null>(null);
+  const shownNodes = useMemo(() => {
+    if (!replayMask) return nodes;
+    return nodes
+      .filter((n) => !replayMask.hiddenNodes.has(n.node_id))
+      .map((n) => {
+        const at = replayMask.nodeAt.get(n.node_id);
+        return at ? { ...n, latitude: at.latitude, longitude: at.longitude } : n;
+      });
+  }, [nodes, replayMask]);
+  const shownConnections = useMemo(() => {
+    if (!replayMask) return connections;
+    return connections
+      .filter(
+        (c) =>
+          !replayMask.hiddenConnections.has(c.connection_id) &&
+          !replayMask.hiddenNodes.has(c.from_node_id) &&
+          !replayMask.hiddenNodes.has(c.to_node_id),
+      )
+      .map((c) => {
+        const limit = replayMask.speedLimit.get(c.connection_id);
+        return limit === undefined ? c : { ...c, speed_limit: limit };
+      });
+  }, [connections, replayMask]);
+
   const [violations, setViolations] = useState<Violation[]>([]);
   const [liveViolations, setLiveViolations] = useState(0);
   const [congestion, setCongestion] = useState<Record<number, number>>({});
@@ -737,8 +767,8 @@ export default function ProjectConsolePage() {
         <div className="relative min-w-0 flex-1" data-cursor-stage>
         <GraphCanvas
           ref={canvas}
-          nodes={nodes}
-          connections={connections}
+          nodes={shownNodes}
+          connections={shownConnections}
           congestionTargets={congestion}
           flash={flash}
           nodeWarnings={nodeWarnings}
@@ -941,6 +971,7 @@ export default function ProjectConsolePage() {
         cameraOf={cameraOf}
         info={agent.info}
         presentation={presentation}
+        onReplayMask={setReplayMask}
       />
 
       <NewConnectionDialog

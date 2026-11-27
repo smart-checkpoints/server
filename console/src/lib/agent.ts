@@ -11,7 +11,13 @@ export type AgentTarget =
   | { kind: "point"; latitude: number; longitude: number }
   | { kind: "edge-new"; from_node_id: number; to_node_id: number }
   | { kind: "edge"; connection_id: number }
-  | { kind: "node-move"; node_id: number; to: { latitude: number; longitude: number } }
+  | {
+      kind: "node-move";
+      node_id: number;
+      /** Where it was before the move (servers from before this field may leave it out). */
+      from?: { latitude: number; longitude: number };
+      to: { latitude: number; longitude: number };
+    }
   | { kind: "ui"; element: "violations" | "quality" };
 
 export type AgentApiCall = { method: string; path: string; status: number; ms: number };

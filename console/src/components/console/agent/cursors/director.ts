@@ -75,6 +75,8 @@ export type DirectorEnv = {
   /** Root font scale: presentation mode makes everything bigger. */
   rootScale(): number;
   reducedMotion(): boolean;
+  /** Told the moment a cursor clicks: a replay shows the change landing then. */
+  clicked?(callId: string): void;
 };
 
 type JobKind = AgentTarget["kind"];
@@ -674,6 +676,7 @@ export class Director {
     const t = this.t();
     job.pressedAt = at;
     this.recordSync(job);
+    this.env.clicked?.(job.callId);
     c.pressUntil = at + t.pressMs;
     // The cross's arrows close right in on the spot; a pointer just dips.
     c.pressDepth = job.kind === "point" && t.placeGlyph === "cross" ? Math.min(t.pressScale, 0.72) : t.pressScale;

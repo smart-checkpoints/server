@@ -152,6 +152,10 @@ export default function CursorLab({ controls, onClose }: { controls: LabControls
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 text-xs">
         <section className="space-y-2 pb-3">
           <h3 className="font-display text-xs font-bold">Playback</h3>
+          <p className="text-text-dim">
+            Replays the last run Sayes acted in, from the map as it was before it; each change lands as its cursor
+            clicks. On screen only: nothing is changed or sent.
+          </p>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" className="btn btn-primary rounded-full px-3 py-1 text-xs font-semibold disabled:opacity-50" disabled={!controls.canReplay} onClick={() => { setPaused(false); controls.replay(); }}>
               Replay last run

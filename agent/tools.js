@@ -496,86 +496,133 @@ const TOOLS = [
   },
 
   {
-    name: "delete_edge",
+    name: "delete_edges",
     description:
-      "Delete one edge. The operator always confirms. Refused if violations are linked to it: they are legal records tied to that edge.",
-    input_schema: strict({ connection_id: { type: "integer" } }),
+      "Delete one or more edges, in ONE call with all their connection_ids: the operator approves them together on one card. Edges with violations linked are kept (violations are legal records tied to that edge) and listed on the card; if every edge asked for has violations, nothing is deleted.",
+    input_schema: strict({ connection_ids: { type: "array", items: { type: "integer" } } }),
     validate: (input) =>
-      isInt(input.connection_id) ? { value: { connection_id: input.connection_id } } : { error: "connection_id must be an integer" },
+      Array.isArray(input.connection_ids) && input.connection_ids.length > 0 && input.connection_ids.every(isInt)
+        ? { value: { connection_ids: [...new Set(input.connection_ids)].slice(0, 200) } }
+        : { error: "connection_ids must be a non-empty array of integers" },
     prepare: async (value, ctx) => {
       const [nodes, edges, violations] = await Promise.all([
         ctx.api.getNodes(),
         ctx.api.getConnections(),
         ctx.api.getViolations(),
       ]);
-      const edge = edges.find((e) => e.connection_id === value.connection_id);
-      if (!edge) throw new ToolError(`There is no edge with connection_id ${value.connection_id}.`);
       const cam = cameraOf(nodes);
-      const linked = violations.filter((v) => v.connection_id === edge.connection_id).length;
-      if (linked > 0) {
+      const missing = value.connection_ids.filter((id) => !edges.some((e) => e.connection_id === id));
+      if (missing.length === value.connection_ids.length) {
+        throw new ToolError(`There is no edge with connection_id ${missing.join(", ")}.`);
+      }
+      const pair = (e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`;
+      const asked = edges.filter((e) => value.connection_ids.includes(e.connection_id));
+      const linked = (e) => violations.filter((v) => v.connection_id === e.connection_id).length;
+      const kept = asked.filter((e) => linked(e) > 0);
+      const doomed = asked.filter((e) => linked(e) === 0);
+      if (doomed.length === 0) {
         throw new ToolError(
-          `The edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)} has ${linked} recorded violation(s) linked to it. Violations are legal records, so it cannot be deleted.`,
+          `Every edge asked for has recorded violations linked to it (${kept.map((e) => `${pair(e)}: ${linked(e)}`).join(", ")}). Violations are legal records, so none can be deleted.`,
         );
       }
+      const n = doomed.length;
       return {
-        target: { kind: "edge", connection_id: edge.connection_id },
+        target: { kind: "edge", connection_id: doomed[0].connection_id },
         confirm: {
-          summary: `Delete the edge from camera ${cam(edge.from_node_id)} to camera ${cam(edge.to_node_id)}?`,
+          summary: n === 1 ? `Delete the edge from camera ${cam(doomed[0].from_node_id)} to camera ${cam(doomed[0].to_node_id)}?` : `Delete ${n} edges?`,
           details: [
-            `${edge.speed_limit} km/h, ${edge.distance === null ? "not measured" : `${Math.round(edge.distance)} m`}. No violations are linked to it.`,
-            "Cars between these two cameras will no longer be checked.",
+            `${n === 1 ? "Edge" : "Edges"} removed: ${doomed.map(pair).join(", ")}. Cars on ${n === 1 ? "it" : "them"} will no longer be checked.`,
+            ...(kept.length
+              ? [`Kept, because violations are linked to them: ${kept.map((e) => `${pair(e)} (${linked(e)})`).join(", ")}.`]
+              : []),
           ],
         },
-        plan: value,
+        plan: { connection_ids: doomed.map((e) => e.connection_id), kept: kept.map((e) => ({ connection_id: e.connection_id, violations: linked(e) })) },
       };
     },
     run: async (plan, ctx) => {
-      await ctx.api.deleteConnection(plan.connection_id);
-      return { deleted_connection_id: plan.connection_id };
+      const deleted = [];
+      const failed = [];
+      for (const id of plan.connection_ids) {
+        try {
+          await ctx.api.deleteConnection(id);
+          deleted.push(id);
+        } catch (err) {
+          failed.push({ connection_id: id, error: err.message });
+        }
+      }
+      return { deleted_connection_ids: deleted, kept_with_violations: plan.kept, ...(failed.length ? { failed } : {}) };
     },
   },
 
   {
-    name: "delete_checkpoint",
+    name: "delete_checkpoints",
     description:
-      "Delete one checkpoint and every edge touching it. The operator always confirms. Refused if any of those edges has violations linked to it. Its camera number is never reused.",
-    input_schema: strict({ node_id: { type: "integer" } }),
-    validate: (input) => (isInt(input.node_id) ? { value: { node_id: input.node_id } } : { error: "node_id must be an integer" }),
+      "Delete one or more checkpoints and every edge touching them, in ONE call with all their node_ids (for 'delete all cameras', every node_id): the operator approves them together on one card. A checkpoint with an edge that has violations linked is kept and listed on the card; if every one asked for has, nothing is deleted. Camera numbers are never reused.",
+    input_schema: strict({ node_ids: { type: "array", items: { type: "integer" } } }),
+    validate: (input) =>
+      Array.isArray(input.node_ids) && input.node_ids.length > 0 && input.node_ids.every(isInt)
+        ? { value: { node_ids: [...new Set(input.node_ids)].slice(0, 200) } }
+        : { error: "node_ids must be a non-empty array of integers" },
     prepare: async (value, ctx) => {
       const [nodes, edges, violations] = await Promise.all([
         ctx.api.getNodes(),
         ctx.api.getConnections(),
         ctx.api.getViolations(),
       ]);
-      const node = nodes.find((n) => n.node_id === value.node_id);
-      if (!node) throw new ToolError(`There is no checkpoint with node_id ${value.node_id}.`);
-      const touching = edges.filter((e) => e.from_node_id === node.node_id || e.to_node_id === node.node_id);
-      const linked = violations.filter((v) => touching.some((e) => e.connection_id === v.connection_id)).length;
-      if (linked > 0) {
+      const asked = nodes.filter((n) => value.node_ids.includes(n.node_id));
+      if (asked.length === 0) throw new ToolError(`There is no checkpoint with node_id ${value.node_ids.join(", ")}.`);
+      const cam = cameraOf(nodes);
+      const touching = (node) => edges.filter((e) => e.from_node_id === node.node_id || e.to_node_id === node.node_id);
+      const linked = (node) => violations.filter((v) => touching(node).some((e) => e.connection_id === v.connection_id)).length;
+      const kept = asked.filter((n) => linked(n) > 0);
+      const doomed = asked.filter((n) => linked(n) === 0);
+      if (doomed.length === 0) {
         throw new ToolError(
-          `Camera ${node.id_in_project} has edges with ${linked} recorded violation(s) linked to them. Violations are legal records, so it cannot be deleted.`,
+          `Every camera asked for has edges with recorded violations linked to them (${kept.map((n) => `camera ${n.id_in_project}: ${linked(n)}`).join(", ")}). Violations are legal records, so none can be deleted.`,
         );
       }
-      const cam = cameraOf(nodes);
-      const n = touching.length;
+      const doomedEdges = edges.filter((e) => doomed.some((n) => n.node_id === e.from_node_id || n.node_id === e.to_node_id));
+      const n = doomed.length;
+      const e = doomedEdges.length;
+      const cameras = doomed.map((c) => c.id_in_project).join(", ");
       return {
-        target: { kind: "node", node_id: node.node_id },
+        target: { kind: "node", node_id: doomed[0].node_id },
         confirm: {
-          summary: `Delete camera ${node.id_in_project}${n ? ` and its ${n} edge${n === 1 ? "" : "s"}` : ""}?`,
+          summary:
+            n === 1
+              ? `Delete camera ${cameras}${e ? ` and its ${e} edge${e === 1 ? "" : "s"}` : ""}?`
+              : `Delete ${n} cameras${e ? ` and their ${e} edge${e === 1 ? "" : "s"}` : ""}?`,
           details: [
-            ...(n ? [`Edges removed: ${touching.map((e) => `${cam(e.from_node_id)} → ${cam(e.to_node_id)}`).join(", ")}.`] : []),
-            `Camera number ${node.id_in_project} will not be given to any new checkpoint.`,
+            `Camera${n === 1 ? "" : "s"} ${cameras}.${e ? ` Edges removed: ${doomedEdges.map((x) => `${cam(x.from_node_id)} → ${cam(x.to_node_id)}`).join(", ")}.` : ""}`,
+            ...(kept.length
+              ? [`Kept, because violations are linked to their edges: ${kept.map((c) => `camera ${c.id_in_project} (${linked(c)})`).join(", ")}.`]
+              : []),
+            "Deleted camera numbers will not be given to any new checkpoint.",
           ],
         },
-        plan: value,
+        plan: {
+          node_ids: doomed.map((c) => c.node_id),
+          kept: kept.map((c) => ({ camera: c.id_in_project, violations: linked(c) })),
+        },
       };
     },
     run: async (plan, ctx) => {
-      const result = await ctx.api.deleteNode(plan.node_id);
+      const deleted = [];
+      const failed = [];
+      for (const id of plan.node_ids) {
+        try {
+          const result = await ctx.api.deleteNode(id);
+          deleted.push({ camera: result.id_in_project, deleted_connection_ids: result.connections_removed });
+        } catch (err) {
+          failed.push({ node_id: id, error: err.message });
+        }
+      }
       return {
-        deleted_node_id: plan.node_id,
-        camera: result.id_in_project,
-        deleted_connection_ids: result.connections_removed,
+        deleted_cameras: deleted.map((d) => d.camera),
+        deleted_connection_ids: deleted.flatMap((d) => d.deleted_connection_ids),
+        kept_with_violations: plan.kept,
+        ...(failed.length ? { failed } : {}),
       };
     },
   },

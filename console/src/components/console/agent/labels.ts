@@ -55,14 +55,20 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
       title = "Adding a camera on an edge";
       outcome = `Placed camera ${num(result.camera) ?? "?"} on the edge`;
       break;
-    case "delete_edge":
-      title = "Deleting an edge";
-      outcome = "Edge deleted";
+    case "delete_edges": {
+      const n = Array.isArray(input.connection_ids) ? input.connection_ids.length : 0;
+      const done = Array.isArray(result.deleted_connection_ids) ? result.deleted_connection_ids.length : 0;
+      title = n === 1 ? "Deleting an edge" : `Deleting ${n} edges`;
+      outcome = done === 1 ? "Deleted 1 edge" : `Deleted ${done} edges`;
       break;
-    case "delete_checkpoint":
-      title = `Deleting camera ${camera(cameraOf, input.node_id)}`;
-      outcome = `Deleted camera ${num(result.camera) ?? camera(cameraOf, input.node_id)}`;
+    }
+    case "delete_checkpoints": {
+      const n = Array.isArray(input.node_ids) ? input.node_ids.length : 0;
+      const done = Array.isArray(result.deleted_cameras) ? (result.deleted_cameras as number[]) : [];
+      title = n === 1 ? `Deleting camera ${camera(cameraOf, (input.node_ids as unknown[])[0])}` : `Deleting ${n} cameras`;
+      outcome = done.length === 1 ? `Deleted camera ${done[0]}` : `Deleted ${done.length} cameras`;
       break;
+    }
     case "create_checkpoint":
       title = "Placing a checkpoint";
       outcome = `Placed camera ${num(result.camera) ?? "?"}`;

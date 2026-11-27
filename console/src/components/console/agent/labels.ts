@@ -94,10 +94,27 @@ export function describeAction(action: AgentAction, cameraOf: CameraOf): { title
 }
 
 /** Lanes are told apart by shade and number; status colours stay for status. */
-export const LANE_COLOURS = ["var(--cyan)", "var(--cyan-dark)", "var(--text)", "var(--cyan-hover)"];
+/**
+ * Calls running at once, told apart by name and shade. Every shade is the
+ * cyan family or ink from the design tokens, mixed where two would otherwise
+ * look alike; status colours (green, yellow, red) are never used.
+ */
+export const LANES = [
+  { name: "Tram", colour: "var(--cyan)" },
+  { name: "Taxi", colour: "var(--cyan-dark)" },
+  { name: "Microbus", colour: "var(--text)" },
+  { name: "Metro", colour: "color-mix(in oklab, var(--cyan-dark) 55%, var(--text))" },
+  { name: "Tuk-tuk", colour: "var(--text-dim)" },
+];
 
-export function laneColour(lane: number) {
-  return LANE_COLOURS[(Math.max(1, lane) - 1) % LANE_COLOURS.length];
+const lane = (n: number) => LANES[(Math.max(1, n) - 1) % LANES.length];
+
+export function laneColour(n: number) {
+  return lane(n).colour;
+}
+
+export function laneName(n: number) {
+  return lane(n).name;
 }
 
 export const EXAMPLE_PROMPTS = [

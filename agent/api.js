@@ -1,12 +1,12 @@
 "use strict";
 
 /**
- * Dispatch's only way to touch the system: the server's own REST API, called
+ * Sayes's only way to touch the system: the server's own REST API, called
  * over loopback with the operator key the console sent with the run.
  *
  * Going through HTTP rather than calling the handlers directly is the point.
  * Every check a request from the console gets - the key, the project, the
- * validation - Dispatch's calls get too, and every change it makes is
+ * validation - Sayes's calls get too, and every change it makes is
  * broadcast over Socket.IO by the same code that broadcasts the console's.
  */
 

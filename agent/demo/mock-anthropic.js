@@ -1,6 +1,6 @@
 // A scripted stand-in for POST /v1/messages (streaming), to exercise the agent
 // loop and the console without an API key or credits. It only understands
-// messages that start with BUILD, MOVE, VIOL, LIMIT or BAD; anything else gets
+// messages that start with BUILD, MOVE, VIOL, LANES, LIMIT or BAD; anything else gets
 // "Hello.". Optional first argument: a file to log each request's settings to.
 //
 //   node agent/demo/mock-anthropic.js [log-file]   (listens on 127.0.0.1:3199)
@@ -68,6 +68,13 @@ function script(body) {
       return message([{ type: "tool_use", name: "get_diagnostics", input: {} }], "tool_use");
     }
     return message([{ type: "text", text: "Done: three cameras on the Corniche, connected eastbound at 50 km/h." }], "end_turn");
+  }
+  if (current.startsWith("LANES")) {
+    // Five checkpoints at once: one cursor in each of the five lanes.
+    if (firstUser) return message([{ type: "tool_use", name: "points_along_street", input: { street: "Abu Qir Street", count: 5 } }], "tool_use");
+    const tool = results[0] && results[0].data;
+    if (tool && tool.points) return message(tool.points.map((p) => ({ type: "tool_use", name: "create_checkpoint", input: { latitude: p.latitude, longitude: p.longitude } })), "tool_use");
+    return message([{ type: "text", text: "Placed five cameras along Abu Qir Street." }], "end_turn");
   }
   if (current.startsWith("MOVE")) {
     if (firstUser) return message([{ type: "tool_use", name: "get_network", input: {} }], "tool_use");

@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Dispatch's tools.
+ * Sayes's tools.
  *
  * Each one maps onto ALLOWED endpoints of the REST API and nothing else.
  * What the agent must never do - create, edit or delete violations or

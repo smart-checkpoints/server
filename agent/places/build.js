@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Builds places.json, the demo place list the Dispatch agent resolves names
+ * Builds places.json, the demo place list the Sayes agent resolves names
  * against.
  *
  * Every coordinate is snapped onto the road it names with OSRM, and checked

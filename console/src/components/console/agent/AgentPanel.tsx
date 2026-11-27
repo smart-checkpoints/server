@@ -23,7 +23,7 @@ type AgentPanelProps = {
 };
 
 /**
- * The Dispatch panel: what the operator asked, what the agent is doing about
+ * The Sayes panel: what the operator asked, what the agent is doing about
  * it, the cards that need their approval, and the record of everything it
  * has done. Docked beside the map rather than over it, so the map keeps its
  * whole width for the cursors.
@@ -60,7 +60,7 @@ const AgentPanel = forwardRef<HTMLSpanElement, AgentPanelProps>(function AgentPa
 
   return (
     <aside
-      aria-label="Dispatch"
+      aria-label="Sayes"
       className={cn(
         "relative z-20 flex h-full shrink-0 flex-col border-r border-border bg-surface",
         presentation ? "w-[30rem]" : "w-[24rem]",
@@ -76,7 +76,12 @@ const AgentPanel = forwardRef<HTMLSpanElement, AgentPanelProps>(function AgentPa
             <CursorGlyph className="h-4 w-4" />
           </span>
           <div className="min-w-0">
-            <h2 className="font-display text-base font-bold text-text">Dispatch</h2>
+            <h2 className="flex items-baseline gap-2 font-display text-base font-bold text-text">
+              Sayes
+              <span lang="ar" dir="rtl" className="font-sans text-sm font-medium text-text-dim">
+                سايس
+              </span>
+            </h2>
             <p className="truncate font-mono text-xs text-text-dim">
               {disabled ? "Off" : busy ? (thinking ? "Thinking…" : "Working…") : "Ready"}
             </p>
@@ -126,9 +131,9 @@ const AgentPanel = forwardRef<HTMLSpanElement, AgentPanelProps>(function AgentPa
               onKeyDown={onKeyDown}
               disabled={disabled}
               rows={presentation ? 2 : 3}
-              placeholder="Tell Dispatch what to set up…"
+              placeholder="Tell Sayes what to set up…"
               className="field resize-none leading-relaxed"
-              aria-label="Message to Dispatch"
+              aria-label="Message to Sayes"
             />
             <div className="mt-3 flex items-center justify-between gap-3">
               {!presentation && turns.length > 0 && !busy ? (
@@ -406,7 +411,7 @@ function AuditList({ projectId, apiKey, refreshKey }: { projectId: number; apiKe
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="flex items-center justify-between px-5 py-3">
-        <p className="text-xs text-text-dim">Every action Dispatch took, newest first. Read-only.</p>
+        <p className="text-xs text-text-dim">Every action Sayes took, newest first. Read-only.</p>
         <button type="button" onClick={load} className="text-xs font-semibold text-cyan-dark">
           Refresh
         </button>

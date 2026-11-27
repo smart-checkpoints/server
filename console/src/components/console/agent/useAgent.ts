@@ -50,7 +50,7 @@ export type Highlights = { connectionIds: number[]; nodeIds: number[]; caption: 
 const NO_HIGHLIGHTS: Highlights = { connectionIds: [], nodeIds: [], caption: "" };
 
 /**
- * One Dispatch conversation: sends the operator's words, folds the event
+ * One Sayes conversation: sends the operator's words, folds the event
  * stream into turns and actions, and answers confirmations.
  */
 export function useAgent(projectId: number, apiKey: string) {

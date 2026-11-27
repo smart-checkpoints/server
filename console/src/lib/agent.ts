@@ -1,5 +1,5 @@
 /**
- * The Dispatch agent's wire contract, and the calls the console makes to it.
+ * The Sayes agent's wire contract, and the calls the console makes to it.
  *
  * A run is one POST that answers with a Server-Sent Events stream. The stream
  * says what the agent is doing as it does it; the changes themselves arrive

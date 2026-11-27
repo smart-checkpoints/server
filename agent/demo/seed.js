@@ -234,8 +234,8 @@ async function summarise(base, key, projectId) {
   const key = arg("key") || process.env.DEMO_API_KEY;
 
   if (!key) {
-    const created = await api(base, null, "POST", "/create-project", { "project-name": "Dispatch demo" });
-    console.log(`Created project ${created.project_id}, "Dispatch demo". Add this line to server/.env and run again:`);
+    const created = await api(base, null, "POST", "/create-project", { "project-name": "Sayes demo" });
+    console.log(`Created project ${created.project_id}, "Sayes demo". Add this line to server/.env and run again:`);
     console.log(`\n  DEMO_API_KEY=${created.api_key}\n`);
     console.log("Start the distance driver with the same key (SC_API_KEY in driver-osrm/.env).");
     process.exit(1);

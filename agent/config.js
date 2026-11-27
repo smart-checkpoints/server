@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Dispatch's settings, all from the environment.
+ * Sayes's settings, all from the environment.
  *
  * The Anthropic API key is read by the SDK itself from ANTHROPIC_API_KEY, on
  * this server only. It is never sent to the console and never logged.

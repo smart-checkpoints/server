@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Dispatch: an operator describes what they want, and the agent configures
+ * Sayes: an operator describes what they want, and the agent configures
  * the checkpoint network through the server's own REST API, streaming every
  * step to the console so it can be animated as it happens.
  *
@@ -148,8 +148,8 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
 
   console.log(
     config.enabled
-      ? `🤖 Dispatch agent on: ${config.model}, thinking ${config.thinking}, effort ${config.effort}`
-      : "🤖 Dispatch agent off: set ANTHROPIC_API_KEY in .env to enable it",
+      ? `🤖 Sayes agent on: ${config.model}, thinking ${config.thinking}, effort ${config.effort}`
+      : "🤖 Sayes agent off: set ANTHROPIC_API_KEY in .env to enable it",
   );
 }
 

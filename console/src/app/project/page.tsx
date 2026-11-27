@@ -131,7 +131,7 @@ export default function ProjectConsolePage() {
   const socket = useRef<ConsoleSocket | null>(null);
   const flashSeq = useRef(0);
 
-  /* Dispatch, the agent. Its cursors leave from the mark in its panel. */
+  /* Sayes, the agent. Its cursors leave from the mark in its panel. */
   const agent = useAgent(session?.project_id ?? 0, session?.apiKey ?? "");
   const agentMark = useRef<HTMLSpanElement>(null);
   const [presentation, setPresentation] = useState(false);

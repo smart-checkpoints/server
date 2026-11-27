@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * The demo place list: which streets and landmarks Dispatch can name, and
+ * The demo place list: which streets and landmarks Sayes can name, and
  * points along them. Built by `build.js`, snapped onto the roads with OSRM.
  * Nothing here calls the network.
  */

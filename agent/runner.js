@@ -23,6 +23,17 @@ const { createApiClient, ApiError } = require("./api.js");
 
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
+/** The tools whose calls the console draws a cursor for (they have a target). */
+const CURSOR_TOOLS = new Set([
+  "create_checkpoint",
+  "create_edge",
+  "set_speed_limit",
+  "move_checkpoint_by",
+  "move_checkpoint_to",
+  "get_violation_summary",
+  "get_diagnostics",
+]);
+
 let client = null;
 function anthropic() {
   // The SDK reads ANTHROPIC_API_KEY itself. Created on first use so a server
@@ -432,7 +443,11 @@ async function startRun({ projectId, apiKey, apiBaseUrl, sessionId, message, emi
 
       // Parallel calls run in parallel: that is what puts several cursors on
       // screen at once. Lanes number the calls that get a cursor.
-      const results = await Promise.all(toolUses.map((block, index) => executeToolCall(run, block, index + 1)));
+      // Lanes count only the calls that get a cursor, so the first cursor on
+      // screen is always lane 1 whatever reads run beside it.
+      let cursorLane = 0;
+      const lanes = toolUses.map((block) => (CURSOR_TOOLS.has(block.name) ? ++cursorLane : 0));
+      const results = await Promise.all(toolUses.map((block, index) => executeToolCall(run, block, lanes[index])));
       session.messages.push({ role: "user", content: results });
       consistentLength = session.messages.length;
 

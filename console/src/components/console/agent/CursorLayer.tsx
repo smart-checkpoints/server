@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import type { GraphCanvasHandle } from "@/components/console/GraphCanvas";
 import { houseEase } from "@/lib/ease";
 import type { AgentEvent, AgentTarget } from "@/lib/agent";
-import { describeAction, laneColour, type CameraOf } from "./labels";
+import { describeAction, laneColour, laneName, type CameraOf } from "./labels";
 import type { AgentAction } from "./useAgent";
 import { CursorGlyph } from "./AgentPanel";
 
@@ -89,7 +89,7 @@ function flight(leadMs: number, from: Point | null, to: Point | null) {
 /**
  * The agent's cursors.
  *
- * Each one is a real tool call: it leaves the Dispatch mark when the server
+ * Each one is a real tool call: it leaves the Sayes mark when the server
  * says a call is starting, reaches its target as the call is sent, waits
  * while it runs, and leaves when it is done. Calls running at once are
  * separate cursors, numbered and shaded by lane.
@@ -243,11 +243,20 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
         const p = track.last;
         if (!p || !els?.cursor) continue;
         els.cursor.style.transform = `translate3d(${p.x}px, ${p.y}px, 0)`;
-        // Near the right edge the label opens to the left instead.
-        const flip = p.x > window.innerWidth - 300;
-        if (flip !== (els.cursor.dataset.flip === "1")) {
-          if (flip) els.cursor.dataset.flip = "1";
-          else delete els.cursor.dataset.flip;
+        // A label that would run off the right or bottom edge opens to the
+        // left or upward instead. Measured, because names and labels vary.
+        const label = els.cursor.querySelector<HTMLElement>(".agent-cursor-label");
+        if (label) {
+          const flipX = p.x + 24 + label.offsetWidth > window.innerWidth - 8;
+          const flipY = p.y + 24 + label.offsetHeight > window.innerHeight - 8;
+          if (flipX !== (els.cursor.dataset.flip === "1")) {
+            if (flipX) els.cursor.dataset.flip = "1";
+            else delete els.cursor.dataset.flip;
+          }
+          if (flipY !== (els.cursor.dataset.flipY === "1")) {
+            if (flipY) els.cursor.dataset.flipY = "1";
+            else delete els.cursor.dataset.flipY;
+          }
         }
 
         if (els.line && track.edge) {
@@ -352,7 +361,7 @@ export default function CursorLayer({ actions, subscribe, canvas, origin, leadMs
               className="agent-cursor-label absolute left-5 top-5 flex items-center gap-2 whitespace-nowrap rounded-full px-3 py-1.5 font-medium text-surface shadow-md"
               style={{ backgroundColor: colour }}
             >
-              <span className="font-mono text-[0.6875rem] opacity-80">{s.lane}</span>
+              <span className="font-mono text-[0.6875rem] font-semibold opacity-85">{laneName(s.lane)}</span>
               <span className="text-xs">{label}</span>
             </span>
           </div>

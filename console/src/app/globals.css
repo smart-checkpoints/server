@@ -544,3 +544,9 @@ html[data-presentation] {
   left: auto;
   right: 0.75rem;
 }
+
+/* Near the bottom edge the label opens upward. */
+.agent-cursor[data-flip-y="1"] .agent-cursor-label {
+  top: auto;
+  bottom: 0.75rem;
+}

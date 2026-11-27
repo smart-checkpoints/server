@@ -5,6 +5,7 @@ import { cn } from "@/lib/cn";
 import { getAudit, type AgentInfo, type AuditRow } from "@/lib/agent";
 import { describeAction, EXAMPLE_PROMPTS, laneColour, type CameraOf } from "./labels";
 import type { AgentAction, AgentTurn } from "./useAgent";
+import { bounds, glyph, glyphPathData } from "./cursors/morph";
 
 type AgentPanelProps = {
   projectId: number;
@@ -175,10 +176,16 @@ export default AgentPanel;
    Pieces
    ------------------------------------------------------------------------- */
 
+/* The mark is the same Vision pointer the cursors are, so they leave from and
+   return into their own shape. */
+const POINTER_PATH = glyphPathData("pointer");
+const POINTER_BOX = bounds(glyph("pointer"));
+const POINTER_VIEW = `${(POINTER_BOX.x0 - 0.5).toFixed(2)} ${(POINTER_BOX.y0 - 0.5).toFixed(2)} ${(POINTER_BOX.x1 - POINTER_BOX.x0 + 1).toFixed(2)} ${(POINTER_BOX.y1 - POINTER_BOX.y0 + 1).toFixed(2)}`;
+
 export function CursorGlyph({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 16 16" className={className} aria-hidden="true">
-      <path d="M2.5 1.5 L13 8 L8.2 9.2 L6.2 13.8 Z" fill="currentColor" stroke="currentColor" strokeWidth="1" strokeLinejoin="round" />
+    <svg viewBox={POINTER_VIEW} className={className} aria-hidden="true">
+      <path d={POINTER_PATH} fill="currentColor" fillRule="evenodd" />
     </svg>
   );
 }

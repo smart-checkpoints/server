@@ -734,7 +734,7 @@ export default function ProjectConsolePage() {
           onReset={agent.reset}
         />
 
-        <div className="relative min-w-0 flex-1">
+        <div className="relative min-w-0 flex-1" data-cursor-stage>
         <GraphCanvas
           ref={canvas}
           nodes={nodes}
@@ -760,7 +760,7 @@ export default function ProjectConsolePage() {
 
         {agent.highlights.caption ? (
           <div className="pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center">
-            <span className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
+            <span data-cursor-avoid className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
               {agent.highlights.caption}
             </span>
           </div>
@@ -795,7 +795,7 @@ export default function ProjectConsolePage() {
           <div className="flex h-full flex-col justify-between">
             <div className="flex items-start justify-between gap-4">
               {!presentation ? (
-                <div className="pointer-events-auto flex items-center gap-2">
+                <div data-cursor-avoid className="pointer-events-auto flex items-center gap-2">
                   <Button
                     size="sm"
                     variant="secondary"
@@ -827,16 +827,24 @@ export default function ProjectConsolePage() {
 
               {/* Framing and zooming are the graph's own; the map has its own. */}
               {activeView === "graph" && !presentation ? (
-                <CanvasControls
-                  onFit={() => canvas.current?.fit()}
-                  onZoomIn={() => canvas.current?.zoomBy(1.2)}
-                  onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
-                />
+                <div data-cursor-avoid>
+                  <CanvasControls
+                    onFit={() => canvas.current?.fit()}
+                    onZoomIn={() => canvas.current?.zoomBy(1.2)}
+                    onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
+                  />
+                </div>
               ) : null}
             </div>
 
             <div className="flex items-end justify-between gap-4">
-              {activeView === "graph" && !presentation ? <GraphLegend /> : <span />}
+              {activeView === "graph" && !presentation ? (
+                <div data-cursor-avoid>
+                  <GraphLegend />
+                </div>
+              ) : (
+                <span />
+              )}
               {testDriveOpen && isDemo ? (
                 <TestDrivePanel
                   ref={testDrive}
@@ -857,7 +865,7 @@ export default function ProjectConsolePage() {
                   onSave={saveEdge}
                 />
               ) : activeView === "graph" && !presentation ? (
-                <p className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
+                <p data-cursor-avoid className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
                   Drag between checkpoints to link · shift-drag to move one · F
                   to frame
                 </p>
@@ -929,8 +937,10 @@ export default function ProjectConsolePage() {
         subscribe={agent.subscribe}
         canvas={canvas}
         origin={agentMark}
-        leadMs={agent.info?.cursor_lead_ms ?? 700}
+        leadMs={agent.info?.cursor_lead_ms ?? 850}
         cameraOf={cameraOf}
+        info={agent.info}
+        presentation={presentation}
       />
 
       <NewConnectionDialog

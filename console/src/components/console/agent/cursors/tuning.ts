@@ -12,6 +12,11 @@ import { LANES } from "../labels";
 export type PlaceGlyph = "cross" | "pin";
 
 export type Tuning = {
+  /**
+   * Overall speed: every duration below is divided by it, and the speed-based
+   * factors are rescaled to match, so 2 plays the same motion twice as fast.
+   */
+  speed: number;
   /** Cursor size: 1 is the 32px cursor the OS draws. */
   size: number;
 
@@ -101,50 +106,57 @@ export type Tuning = {
   showPaths: boolean;
 };
 
+/**
+ * Tuned in the Lab on 2026-11-27: floaty and lively, then sped up 1.35× and
+ * folded in here, so `speed: 1` is that pace (times ÷1.35, per-speed factors
+ * ÷1.35, per-acceleration ÷1.35², the lean spring stiffened to match, each
+ * rounded to its slider step). The Lab's sliders are centred on these.
+ */
 export const DEFAULTS: Tuning = {
+  speed: 1,
   size: 1.15,
 
   curveMin: 0.08,
   curveMax: 0.22,
   jitter: 3,
 
-  flightBase: 240,
-  flightK: 21,
-  flightMin: 260,
-  flightMax: 1100,
-  settle: 150,
-  beat: 240,
+  flightBase: 590,
+  flightK: 44,
+  flightMin: 290,
+  flightMax: 1860,
+  settle: 220,
+  beat: 610,
 
-  leanMax: 10,
-  leanPerSpeed: 0.012,
-  leanStiffness: 170,
-  leanDamping: 16,
-  stretchMax: 0.06,
-  stretchPerSpeed: 0.00005,
+  leanMax: 30,
+  leanPerSpeed: 0.037,
+  leanStiffness: 90,
+  leanDamping: 11,
+  stretchMax: 0.25,
+  stretchPerSpeed: 0.00007,
   skewMax: 4,
-  skewPerAccel: 0.0012,
+  skewPerAccel: 0.0007,
   overshoot: 3,
   overshootMinDistance: 300,
-  pressScale: 0.88,
-  pressMs: 90,
+  pressScale: 0.73,
+  pressMs: 65,
   anticipation: 3,
-  anticipationMs: 80,
+  anticipationMs: 135,
 
-  idleAmp: 2.5,
-  idlePeriod: 1800,
-  idleWobble: 1.2,
-  microMin: 5000,
-  microMax: 9000,
-  microRadius: 36,
-  glance: 3,
+  idleAmp: 12,
+  idlePeriod: 2100,
+  idleWobble: 8,
+  microMin: 3750,
+  microMax: 6750,
+  microRadius: 70,
+  glance: 15,
   thinkingBoost: 1.5,
 
-  morphMs: 260,
-  hugMs: 340,
+  morphMs: 310,
+  hugMs: 390,
   hugPad: 6,
   hugRadius: 14,
   edgeHugWidth: 20,
-  shimmerMs: 1100,
+  shimmerMs: 550,
   placeGlyph: "cross",
 
   castMax: 5,
@@ -229,6 +241,41 @@ export function tuningAsCode() {
   const t = tuning();
   const lines = Object.entries(t).map(([k, v]) => `  ${k}: ${JSON.stringify(v)},`);
   return `export const DEFAULTS: Tuning = {\n${lines.join("\n")}\n};\n`;
+}
+
+/**
+ * The values with `speed` applied: the same motion, faster or slower. Times
+ * divide by the speed; anything per px/s divides by it too (and per px/s² by
+ * its square), and the lean spring is stiffened to match, so the balance of
+ * lean, stretch and skew stays exactly as tuned.
+ */
+export function paced(t: Tuning): Tuning {
+  const k = t.speed > 0 ? t.speed : 1;
+  if (k === 1) return t;
+  return {
+    ...t,
+    flightBase: t.flightBase / k,
+    flightK: t.flightK / k,
+    flightMin: t.flightMin / k,
+    flightMax: t.flightMax / k,
+    settle: t.settle / k,
+    beat: t.beat / k,
+    leanPerSpeed: t.leanPerSpeed / k,
+    leanStiffness: t.leanStiffness * k * k,
+    leanDamping: t.leanDamping * k,
+    stretchPerSpeed: t.stretchPerSpeed / k,
+    skewPerAccel: t.skewPerAccel / (k * k),
+    pressMs: t.pressMs / k,
+    anticipationMs: t.anticipationMs / k,
+    idlePeriod: t.idlePeriod / k,
+    microMin: t.microMin / k,
+    microMax: t.microMax / k,
+    morphMs: t.morphMs / k,
+    hugMs: t.hugMs / k,
+    shimmerMs: t.shimmerMs / k,
+    wrapHold: t.wrapHold / k,
+    homeStagger: t.homeStagger / k,
+  };
 }
 
 /** What reduced motion keeps: the timing and the clicks, none of the flourish. */

@@ -34,7 +34,10 @@ call behind it. Chats are kept in the browser; the audit log on the server
 ## The cursors
 
 Each call with a target gets a `lead_ms` in `tool.started`: when the server
-will send it. Calls made together take turns, `AGENT_CURSOR_GAP_MS` apart by
+will send it (`AGENT_CURSOR_LEAD_MS`, 2000 by default). That is all the time a
+cursor has to fly to its target, so it sets the pace: with less, the console
+squeezes the flights to make the click, and past a point it clicks late rather
+than whip across the map. Calls made together take turns, `AGENT_CURSOR_GAP_MS` apart by
 lane, and the gap shrinks with each batch of a run (`…_GAP_DECAY`, down to
 `…_GAP_MIN_MS`), so a run starts calm and gets busier. `tool.finished` carries
 `sent_after_ms` so the console can check its clicks landed on time.

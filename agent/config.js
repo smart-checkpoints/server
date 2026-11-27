@@ -54,7 +54,7 @@ const config = {
   // How long the server waits between telling the console a tool call is
   // starting and making it, so the change lands as the cursor arrives. The
   // call is real either way; this only decides when it is sent.
-  cursorLeadMs: int("AGENT_CURSOR_LEAD_MS", 850, 0, 5000),
+  cursorLeadMs: int("AGENT_CURSOR_LEAD_MS", 2000, 0, 5000),
 
   // Calls made together land one cursor after another, this far apart, so
   // the cursors take turns rather than all clicking at once. The gap shrinks

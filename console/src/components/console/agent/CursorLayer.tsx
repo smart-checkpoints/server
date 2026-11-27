@@ -145,6 +145,8 @@ type Slot = {
   quad: number;
   text: string;
   placed: boolean;
+  /** Until when (performance.now) the tag stays name-only because it ran into another. */
+  crowdedUntil: number;
 };
 
 const emptySlot = (): Slot => ({
@@ -164,6 +166,7 @@ const emptySlot = (): Slot => ({
   quad: 0,
   text: "",
   placed: false,
+  crowdedUntil: 0,
 });
 
 /** Name tag corners: below-right, below-left, above-right, above-left. */
@@ -342,14 +345,21 @@ export default function CursorLayer({
       s.group.style.display = "";
       s.group.style.opacity = String(v.opacity);
 
-      const stroke = v.hug > 0 ? `color-mix(in oklab, ${v.colour} ${Math.round(v.hug * 100)}%, white)` : "white";
+      const stroke = v.look > 0 ? `color-mix(in oklab, ${v.colour} ${Math.round(v.look * 100)}%, white)` : "white";
       if (s.main) {
         s.main.setAttribute("d", v.main);
         s.main.style.fill = v.colour;
-        s.main.style.fillOpacity = String(1 - v.hug * (1 - v.hugFill));
+        s.main.style.fillOpacity = v.fillOpacity.toFixed(3);
         s.main.style.stroke = stroke;
         s.main.style.strokeWidth = String(v.strokeWidth);
-        s.main.style.filter = v.hug > 0.4 ? "none" : "";
+        // The shadow fades with the fill, so it never pops off mid-morph.
+        const shade = 1 - v.look;
+        s.main.style.filter =
+          v.look <= 0
+            ? ""
+            : shade <= 0.01
+              ? "none"
+              : `drop-shadow(0 1px 1px rgb(12 30 53 / ${(0.35 * shade).toFixed(3)})) drop-shadow(0 2px 4px rgb(12 30 53 / ${(0.18 * shade).toFixed(3)}))`;
       }
       if (s.badge) {
         s.badge.setAttribute("d", v.badge);
@@ -428,7 +438,6 @@ export default function CursorLayer({
       const text = v.acting && v.callId ? tagText(byId.get(v.callId), camOf) : "";
       if (s.tagText && text !== s.text) {
         if (text) s.tagText.textContent = text;
-        s.tag.dataset.acting = text ? "1" : "0";
         s.text = text;
       }
       s.tag.style.display = "";
@@ -436,32 +445,65 @@ export default function CursorLayer({
       s.tag.style.backgroundColor = v.colour;
       s.tag.style.color = v.ink;
 
-      const w = s.tag.offsetWidth;
+      // Placed by the size it is heading for, not the size it is part way
+      // through growing to, so it does not hop corners as its words unroll.
       const h = s.tag.offsetHeight;
-      const box = (q: number): Rect => {
-        const d = QUADS[q];
-        return {
-          x: d.x > 0 ? v.anchor.x + 14 : v.anchor.x - 14 - w,
-          y: d.y > 0 ? v.anchor.y + 18 : v.anchor.y - 10 - h,
-          w,
-          h,
+      const nameW = (s.tag.firstElementChild as HTMLElement | null)?.offsetWidth ?? 0;
+      const pad = s.tag.offsetWidth - nameW - (s.tagText?.offsetWidth ?? 0) - parseFloat(s.tagText ? getComputedStyle(s.tagText).marginLeft : "0");
+      const compactW = nameW + pad;
+      const fullW = text && s.tagText ? compactW + s.tagText.scrollWidth + 8 : compactW;
+      const layout = (w: number) => {
+        const box = (q: number): Rect => {
+          const d = QUADS[q];
+          return {
+            x: d.x > 0 ? v.anchor.x + 14 : v.anchor.x - 14 - w,
+            y: d.y > 0 ? v.anchor.y + 18 : v.anchor.y - 10 - h,
+            w,
+            h,
+          };
         };
+        const cost = (q: number) => {
+          const b = box(q);
+          let c = 0;
+          if (v.focus) c += overlap(b, { x: v.focus.x - 4, y: v.focus.y - 4, w: v.focus.w + 8, h: v.focus.h + 8 }) * 4;
+          let tags = 0;
+          for (const other of placed) tags += overlap(b, { x: other.x - 4, y: other.y - 4, w: other.w + 8, h: other.h + 8 });
+          if (b.x < 8) c += (8 - b.x) * 400;
+          if (b.y < 8) c += (8 - b.y) * 400;
+          if (b.x + b.w > vw - 8) c += (b.x + b.w - vw + 8) * 400;
+          if (b.y + b.h > vh - 8) c += (b.y + b.h - vh + 8) * 400;
+          // Stay put unless moving clearly helps: a tag that keeps hopping corners reads as jitter.
+          const stay = q === s.quad ? 0 : Math.max(60, w * h * 0.3);
+          return { total: c + tags * 2 + stay, tags };
+        };
+        let best = s.quad;
+        let bestCost = cost(best);
+        for (let q = 0; q < 4; q += 1) {
+          const k = cost(q);
+          if (k.total < bestCost.total) {
+            best = q;
+            bestCost = k;
+          }
+        }
+        return { quad: best, box: box(best), tags: bestCost.tags };
       };
-      const cost = (q: number) => {
-        const b = box(q);
-        let c = 0;
-        if (v.focus) c += overlap(b, { x: v.focus.x - 4, y: v.focus.y - 4, w: v.focus.w + 8, h: v.focus.h + 8 }) * 4;
-        for (const other of placed) c += overlap(b, other) * 2;
-        if (b.x < 8) c += (8 - b.x) * 400;
-        if (b.y < 8) c += (8 - b.y) * 400;
-        if (b.x + b.w > vw - 8) c += (b.x + b.w - vw + 8) * 400;
-        if (b.y + b.h > vh - 8) c += (b.y + b.h - vh + 8) * 400;
-        return c + (q === s.quad ? 0 : 60); // stay put unless moving clearly helps
-      };
-      let best = s.quad;
-      for (let q = 0; q < 4; q += 1) if (cost(q) < cost(best)) best = q;
-      s.quad = best;
-      const goal = box(best);
+      // Two tags that would run into each other: the later one says only
+      // its name until there is room again (held a moment, so it does not flicker).
+      const clock = performance.now();
+      let spelled = Boolean(text);
+      let spot = layout(spelled ? fullW : compactW);
+      if (spelled && (spot.tags > 0 || clock < s.crowdedUntil)) {
+        const small = layout(compactW);
+        if (spot.tags > 0) s.crowdedUntil = clock + 700;
+        spelled = false;
+        spot = small;
+      }
+      const acting = spelled ? "1" : "0";
+      if (s.tag.dataset.acting !== acting) s.tag.dataset.acting = acting;
+      s.quad = spot.quad;
+      const goal = spot.box;
+      // On the left of the cursor the tag grows leftwards from its right edge.
+      if (QUADS[spot.quad].x < 0) goal.x = v.anchor.x - 14 - s.tag.offsetWidth;
       if (!s.placed) {
         s.tagX.set(goal.x);
         s.tagY.set(goal.y);
@@ -472,7 +514,7 @@ export default function CursorLayer({
       const x = s.tagX.step(goal.x, dt, 1600, 80);
       const y = s.tagY.step(goal.y, dt, 1600, 80);
       s.tag.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
-      placed.push({ x, y, w, h });
+      placed.push(spot.box);
     }
   }, []);
 
@@ -521,7 +563,7 @@ export default function CursorLayer({
   }, []);
 
   /* Elements are handed to the slots as React mounts them. */
-  const bind = useCallback((i: number, part: Exclude<keyof Slot, "ripples" | "tagX" | "tagY" | "quad" | "text" | "placed">) => {
+  const bind = useCallback((i: number, part: Exclude<keyof Slot, "ripples" | "tagX" | "tagY" | "quad" | "text" | "placed" | "crowdedUntil">) => {
     return (el: Element | null) => {
       (slots.current[i] as Record<string, unknown>)[part] = el;
     };

@@ -54,10 +54,14 @@ export function noise(seed: number) {
    Easing
    ------------------------------------------------------------------------- */
 
-/** Accelerate gently, land long: a hand reaching for something. */
-export const easeInOut = cubicBezier(0.45, 0, 0.18, 1);
-/** Dragging: a firmer start, the weight of what is carried. */
-export const easeDrag = cubicBezier(0.55, 0, 0.25, 1);
+/**
+ * Get going, land long: a hand reaching for something. The start is soft
+ * but short (10% of the way at 15% of the time), so a long flight does not
+ * hang at its start and then rush: its top speed is 2.4× its average.
+ */
+export const easeInOut = cubicBezier(0.3, 0, 0.22, 1);
+/** Dragging and drawing: a firmer start, the weight of what is carried, without hanging at the start. */
+export const easeDrag = cubicBezier(0.42, 0, 0.25, 1);
 /** The house curve: for things that appear, not things that travel. */
 export const easeOut = cubicBezier(0.22, 1, 0.36, 1);
 

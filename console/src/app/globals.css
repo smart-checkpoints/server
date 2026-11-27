@@ -147,6 +147,12 @@ html {
   scrollbar-color: var(--border-strong) transparent;
 }
 
+/* The console is one screen that never scrolls, so it reserves no gutter. */
+html:has(.console-app) {
+  scrollbar-gutter: auto;
+  overflow: hidden;
+}
+
 ::-webkit-scrollbar {
   width: 12px;
   height: 12px;

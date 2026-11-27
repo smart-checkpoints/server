@@ -68,6 +68,8 @@ export type GraphCanvasHandle = {
   /** Frames every checkpoint in the view. */
   fit: () => void;
   zoomBy: (factor: number) => void;
+  /** Ground metres per screen pixel at the current zoom, for a scale bar. */
+  metresPerPixel: () => number;
   /**
    * Drops the preview of a checkpoint that was dragged but not committed.
    *
@@ -165,7 +167,17 @@ type GraphCanvasProps = {
   pickMode?: boolean;
   /** The checkpoints a test drive has picked, ringed and named on the canvas. */
   picks?: { start: number | null; end: number | null };
+  /** The checkpoint open in the inspector: ringed, with its street named under it. */
+  selectedNodeId?: number | null;
+  /** node_id -> street (and landmark), for hover cards and the selected label. */
+  nodeLabels?: Record<number, string>;
+  /** A faint OpenStreetMap basemap under the graph. */
+  basemap?: boolean;
+  /** Right-click: where on the ground (null before the first checkpoint) and where on screen. */
+  onContextMenu?: (at: LatLng | null, client: Point) => void;
 };
+
+const NO_LABELS: Record<number, string> = {};
 
 /** A stable empty list, so a missing prop does not repaint every render. */
 const EMPTY_IDS: number[] = [];
@@ -189,14 +201,20 @@ const FLASH_DECAY = 0.016;
  * with no resolved distance, and live congestion.
  */
 /**
- * The part of the canvas width the camera frames into. Sayes floats over the
- * right of the canvas and publishes how much it covers as `--sayes-inset`;
- * framing in what it leaves keeps no checkpoint under the panel.
+ * The part of the canvas the camera frames into. The canvas runs edge to edge
+ * under an open drawer on the left (`--drawer-inset`) and Sayes floating on
+ * the right (`--sayes-inset`); framing in what they leave keeps no
+ * checkpoint under either.
  */
-function usableWidth(fullWidth: number) {
-  if (typeof document === "undefined") return fullWidth;
-  const inset = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sayes-inset")) || 0;
-  return Math.max(fullWidth * 0.4, fullWidth - inset);
+function usableSpan(fullWidth: number) {
+  if (typeof document === "undefined") return { left: 0, width: fullWidth };
+  const style = getComputedStyle(document.documentElement);
+  const read = (name: string) => Number.parseFloat(style.getPropertyValue(name)) || 0;
+  const left = read("--drawer-inset");
+  const right = read("--sayes-inset");
+  const width = fullWidth - left - right;
+  // A window too narrow for both keeps the whole canvas rather than a sliver.
+  return width < fullWidth * 0.35 ? { left: 0, width: fullWidth } : { left, width };
 }
 
 const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
@@ -217,6 +235,10 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       onClickNode,
       pickMode = false,
       picks,
+      selectedNodeId = null,
+      nodeLabels = NO_LABELS,
+      basemap = false,
+      onContextMenu,
     },
     ref,
   ) {
@@ -242,6 +264,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       highlightedNodeIds,
       picks,
       pickMode,
+      selectedNodeId,
+      nodeLabels,
+      basemap,
     });
     data.current = {
       nodes,
@@ -253,7 +278,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       highlightedNodeIds,
       picks,
       pickMode,
+      selectedNodeId,
+      nodeLabels,
+      basemap,
     };
+
+    /* OSM tiles, kept between frames; a loaded tile repaints the canvas. */
+    const tiles = useRef(new Map<string, HTMLImageElement>());
 
     /* Whoever is drawing over the canvas, told after each repaint. */
     const listeners = useRef(new Set<() => void>());
@@ -351,7 +382,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     /** The view that frames `points` (world metres), or null with no room yet. */
     const viewFor = useCallback((points: Point[]) => {
       const { width: fullWidth, height } = size.current;
-      const width = usableWidth(fullWidth);
+      const { left, width } = usableSpan(fullWidth);
       if (points.length === 0 || width === 0) return null;
       const minX = Math.min(...points.map((p) => p.x));
       const maxX = Math.max(...points.map((p) => p.x));
@@ -370,7 +401,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitZoom));
       return {
         zoom,
-        panX: width / 2 - ((minX + maxX) / 2) * zoom,
+        panX: left + width / 2 - ((minX + maxX) / 2) * zoom,
         panY: height / 2 - ((minY + maxY) / 2) * zoom,
       };
     }, []);
@@ -378,7 +409,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
     const fit = useCallback(() => {
       ensureProjection();
       const { width: fullWidth, height } = size.current;
-      const width = usableWidth(fullWidth);
+      const { left, width } = usableSpan(fullWidth);
       const list = data.current.nodes;
       if (!projection.current || list.length === 0 || width === 0) return;
 
@@ -404,7 +435,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       const zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, fitZoom));
       view.current = {
         zoom,
-        panX: width / 2 - ((minX + maxX) / 2) * zoom,
+        panX: left + width / 2 - ((minX + maxX) / 2) * zoom,
         panY: height / 2 - ((minY + maxY) / 2) * zoom,
       };
       paintNow();
@@ -504,8 +535,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         return {
           fit,
-          zoomBy: (factor: number) =>
-            zoomAt(factor, size.current.width / 2, size.current.height / 2),
+          zoomBy: (factor: number) => {
+            // Around the middle of the part of the canvas nothing covers.
+            const { left, width } = usableSpan(size.current.width);
+            zoomAt(factor, left + width / 2, size.current.height / 2);
+          },
+          metresPerPixel: () => 1 / view.current.zoom,
           clearMove,
           setVehicle: (next: CanvasVehicle | null) => {
             vehicle.current = next;
@@ -532,13 +567,19 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           },
 
           isVisible: (lat, lng, margin = 60) => {
+            // Until something has framed the view it is a placeholder that the
+            // first checkpoint to arrive will replace, so nothing counts as
+            // on screen yet: whoever asks frames what they need.
+            if (!framed.current) return false;
             const canvas = canvasRef.current;
             const point = toClient(projectLatLng(lat, lng));
             if (!canvas || !point) return false;
             const rect = canvas.getBoundingClientRect();
+            // Under the drawer or Sayes is not on screen.
+            const span = usableSpan(rect.width);
             return (
-              point.x >= rect.left + margin &&
-              point.x <= rect.right - margin &&
+              point.x >= rect.left + span.left + margin &&
+              point.x <= rect.left + span.left + span.width - margin &&
               point.y >= rect.top + margin &&
               point.y <= rect.bottom - margin
             );
@@ -754,7 +795,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
         ctx.fillStyle = tokens.bg;
         ctx.fillRect(0, 0, width, height);
 
-        drawGrid(ctx, tokens, view.current, size.current);
+        const proj = projection.current;
+        const mapDrawn = data.current.basemap && proj ? drawBasemap(ctx, proj, view.current, size.current, tiles.current, paintNow) : false;
+        if (!mapDrawn) drawGrid(ctx, tokens, view.current, size.current);
 
         ctx.save();
         ctx.translate(panX, panY);
@@ -917,10 +960,11 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           const linking = state.linkFrom?.node_id === node.node_id;
           const pulse = pulses[node.id_in_project] ?? 0;
 
-          if (data.current.highlightedNodeIds.includes(node.node_id)) {
+          const chosen = data.current.selectedNodeId === node.node_id;
+          if (chosen || data.current.highlightedNodeIds.includes(node.node_id)) {
             ctx.beginPath();
             ctx.arc(point.x, point.y, nodeRadius + 8 / zoom, 0, Math.PI * 2);
-            ctx.fillStyle = withAlpha(tokens.cyan, 0.22);
+            ctx.fillStyle = withAlpha(tokens.cyan, chosen ? 0.3 : 0.22);
             ctx.fill();
           }
 
@@ -956,6 +1000,33 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           // fix is a separate fact about the same thing.
           if (warnings[node.node_id]) {
             drawWarningBadge(ctx, tokens, point, nodeRadius, zoom);
+          }
+
+          // The checkpoint in the inspector says which street it is on.
+          const label = chosen ? data.current.nodeLabels[node.node_id] : undefined;
+          if (label) {
+            ctx.save();
+            ctx.font = `600 ${12 / zoom}px ${monoFamily()}`;
+            const textWidth = ctx.measureText(label).width;
+            const padX = 8 / zoom;
+            const boxH = 22 / zoom;
+            const top = point.y + nodeRadius + 8 / zoom;
+            const boxW = textWidth + padX * 2;
+            // Kept inside the part of the canvas the drawer and Sayes leave.
+            const span = usableSpan(size.current.width);
+            const minX = (span.left - panX) / zoom + 8 / zoom;
+            const maxX = (span.left + span.width - panX) / zoom - boxW - 8 / zoom;
+            const boxX = Math.max(minX, Math.min(maxX, point.x - boxW / 2));
+            ctx.fillStyle = tokens.surface;
+            ctx.strokeStyle = tokens.cyan;
+            ctx.lineWidth = 1 / zoom;
+            ctx.beginPath();
+            ctx.roundRect(boxX, top, boxW, boxH, 6 / zoom);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = tokens.text;
+            ctx.fillText(label, boxX + boxW / 2, top + boxH / 2 + 0.5 / zoom);
+            ctx.restore();
           }
 
           const pick =
@@ -1012,9 +1083,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
 
         ctx.restore();
 
-        drawScaleBar(ctx, tokens, view.current, size.current);
+        // The scale is in the console status bar, beside zoom and fit.
       },
-      [isBidirectional, nodeXY, toWorld],
+      [isBidirectional, nodeXY, toWorld, paintNow],
     );
 
     /* Redraw whenever the data behind the frame changes. */
@@ -1028,6 +1099,9 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
       highlightedConnectionIds,
       highlightedNodeIds,
       picks,
+      selectedNodeId,
+      nodeLabels,
+      basemap,
       paintNow,
     ]);
 
@@ -1160,13 +1234,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
             x,
             y,
             lines: [
-              `Checkpoint ${node.id_in_project}`,
+              `Camera ${node.id_in_project}${nodeLabels[node.node_id] ? ` · ${nodeLabels[node.node_id]}` : ""}`,
               `${node.latitude.toFixed(5)}, ${node.longitude.toFixed(5)}`,
               ...(warning ? [warning] : []),
               ...(pickMode
                 ? ["Click to pick it for the test drive"]
                 : [
-                    "Drag to another checkpoint to link",
+                    "Click to inspect · drag to another to link",
                     "Shift-drag to correct its position",
                   ]),
             ],
@@ -1318,8 +1392,28 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(
           onPointerUp={onPointerUp}
           onPointerCancel={onPointerLeave}
           onPointerLeave={onPointerLeave}
-          onContextMenu={(event) => event.preventDefault()}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            if (!onContextMenu) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            const world = toWorld(event.clientX - rect.left, event.clientY - rect.top);
+            const proj = projection.current;
+            onContextMenu(proj ? proj.unproject(world.x, world.y) : null, { x: event.clientX, y: event.clientY });
+          }}
         />
+
+        {basemap ? (
+          <p
+            className="sayes-clear pointer-events-none absolute bottom-1 z-10 rounded bg-surface/80 px-1.5 text-[0.625rem] text-text-dim"
+            style={{ right: "calc(0.5rem + var(--sayes-bottom-inset, 0px))" }}
+          >
+            Basemap ©{" "}
+            <a className="pointer-events-auto underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">
+              OpenStreetMap
+            </a>{" "}
+            contributors
+          </p>
+        ) : null}
 
         {hover && showHover ? (
           <div
@@ -1434,6 +1528,119 @@ function gridStepMeters(zoom: number): number {
   return magnitude * 10;
 }
 
+/* -------------------------------------------------------------------------
+   Basemap: OpenStreetMap raster tiles under the graph
+   ------------------------------------------------------------------------- */
+
+const TILE_URL = "https://tile.openstreetmap.org";
+const MAX_TILES_PER_FRAME = 90;
+const MAX_CACHED_TILES = 600;
+
+/** Web Mercator tile -> the latitude and longitude of its north-west corner. */
+function tileCorner(x: number, y: number, z: number): LatLng {
+  const n = 2 ** z;
+  const lng = (x / n) * 360 - 180;
+  const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+  return { lat, lng };
+}
+
+function tileXY(lat: number, lng: number, z: number) {
+  const n = 2 ** z;
+  const r = (lat * Math.PI) / 180;
+  return {
+    x: Math.floor(((lng + 180) / 360) * n),
+    y: Math.floor(((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * n),
+  };
+}
+
+/**
+ * Draws the tiles under the visible part of the canvas, faint and grey, so
+ * the network stays the figure. Tiles are Web Mercator and the canvas is a
+ * local tangent plane; each tile is placed by its own projected corners,
+ * which at city scale lines up to well under a pixel. Returns false while
+ * there is nothing to draw on, so the grid can stand in.
+ */
+function drawBasemap(
+  ctx: CanvasRenderingContext2D,
+  projection: Projection,
+  view: { panX: number; panY: number; zoom: number },
+  size: { width: number; height: number },
+  cache: Map<string, HTMLImageElement>,
+  repaint: () => void,
+): boolean {
+  const { panX, panY, zoom } = view;
+  const nw = projection.unproject((0 - panX) / zoom, (0 - panY) / zoom);
+  const se = projection.unproject((size.width - panX) / zoom, (size.height - panY) / zoom);
+  const midLat = (nw.lat + se.lat) / 2;
+  // The tile zoom whose pixels are closest to the screen's.
+  const metresPerScreenPx = 1 / zoom;
+  const z = Math.max(3, Math.min(19, Math.round(Math.log2((156543.03392 * Math.cos((midLat * Math.PI) / 180)) / metresPerScreenPx))));
+  const a = tileXY(nw.lat, nw.lng, z);
+  const b = tileXY(se.lat, se.lng, z);
+  const count = (b.x - a.x + 1) * (b.y - a.y + 1);
+  if (count <= 0 || count > MAX_TILES_PER_FRAME) return false;
+
+  ctx.save();
+  ctx.translate(panX, panY);
+  ctx.scale(zoom, zoom);
+  ctx.globalAlpha = 0.34;
+  ctx.filter = "grayscale(1) contrast(0.75) brightness(1.1)";
+  let drawn = 0;
+  const wanted = new Set<string>();
+  for (let x = a.x; x <= b.x; x += 1) {
+    for (let y = a.y; y <= b.y; y += 1) {
+      const key = `${z}/${x}/${y}`;
+      wanted.add(key);
+      let image = cache.get(key);
+      if (!image) {
+        image = new Image();
+        // Tiles allow CORS, and asking for it keeps the canvas readable.
+        image.crossOrigin = "anonymous";
+        image.onload = repaint;
+        // A tile that fails is dropped after a pause, so a later paint asks
+        // for it again instead of leaving a hole for the rest of the session.
+        const failed = image;
+        image.onerror = () =>
+          setTimeout(() => {
+            if (cache.get(key) === failed) cache.delete(key);
+            repaint();
+          }, 3000);
+        image.src = `${TILE_URL}/${key}.png`;
+        cache.set(key, image);
+        if (cache.size > MAX_CACHED_TILES) cache.delete(cache.keys().next().value as string);
+      }
+      const p = projection.project(tileCorner(x, y, z).lat, tileCorner(x, y, z).lng);
+      const q = projection.project(tileCorner(x + 1, y + 1, z).lat, tileCorner(x + 1, y + 1, z).lng);
+      // A hair of overlap hides the seams between neighbouring tiles.
+      const pad = 0.6 / zoom;
+      if (image.complete && image.naturalWidth > 0) {
+        ctx.drawImage(image, p.x - pad, p.y - pad, q.x - p.x + pad * 2, q.y - p.y + pad * 2);
+        drawn += 1;
+        continue;
+      }
+      // Until it arrives, the quarter of the loaded tile one zoom out.
+      const parent = cache.get(`${z - 1}/${x >> 1}/${y >> 1}`);
+      if (parent && parent.complete && parent.naturalWidth > 0) {
+        const half = parent.naturalWidth / 2;
+        ctx.drawImage(parent, (x & 1) * half, (y & 1) * half, half, half, p.x - pad, p.y - pad, q.x - p.x + pad * 2, q.y - p.y + pad * 2);
+        drawn += 1;
+      }
+    }
+  }
+  ctx.restore();
+
+  // Tiles still loading that this view no longer shows are cancelled, so a
+  // glide across zoom levels does not queue the final view behind them.
+  for (const [key, image] of cache) {
+    if (wanted.has(key) || image.complete || key.startsWith(`${z - 1}/`)) continue;
+    image.onload = null;
+    image.onerror = null;
+    image.src = "";
+    cache.delete(key);
+  }
+  return drawn > 0;
+}
+
 function drawGrid(
   ctx: CanvasRenderingContext2D,
   tokens: Tokens,
@@ -1473,39 +1680,3 @@ function drawGrid(
   ctx.restore();
 }
 
-/**
- * The scale bar. This system enforces speed over real driving distance, so the
- * view says out loud how far a screen length actually is.
- */
-function drawScaleBar(
-  ctx: CanvasRenderingContext2D,
-  tokens: Tokens,
-  view: { zoom: number },
-  size: { width: number; height: number },
-) {
-  const step = gridStepMeters(view.zoom);
-  const pixels = step * view.zoom;
-  if (!Number.isFinite(pixels) || pixels < 8) return;
-
-  const x = 24;
-  const y = size.height - 28;
-
-  ctx.save();
-  ctx.strokeStyle = tokens.textDim;
-  ctx.fillStyle = tokens.textDim;
-  ctx.lineWidth = 1.5;
-  ctx.lineCap = "butt";
-
-  ctx.beginPath();
-  ctx.moveTo(x, y - 5);
-  ctx.lineTo(x, y);
-  ctx.lineTo(x + pixels, y);
-  ctx.lineTo(x + pixels, y - 5);
-  ctx.stroke();
-
-  ctx.font = `500 11px ${monoFamily()}`;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "bottom";
-  ctx.fillText(formatDistance(step), x, y - 8);
-  ctx.restore();
-}

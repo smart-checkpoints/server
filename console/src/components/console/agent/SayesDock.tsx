@@ -195,7 +195,8 @@ export default function SayesDock(props: SayesDockProps) {
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.94, y: 12 }}
             transition={{ duration: 0.24, ease: houseEase }}
-            style={{ width: panelWidth, top: `calc(4rem + ${GAP}px)`, right: GAP, bottom: GAP, transformOrigin: "100% 100%" }}
+            // Between the console top bar (3rem) and its status bar (2rem).
+            style={{ width: panelWidth, top: `calc(3rem + ${GAP}px)`, right: GAP, bottom: `calc(2rem + ${GAP}px)`, transformOrigin: "100% 100%" }}
             className={cn(
               "fixed z-40 flex flex-col overflow-hidden rounded-2xl border bg-surface shadow-lg",
               dragging ? "border-cyan" : "border-border",
@@ -341,7 +342,8 @@ export default function SayesDock(props: SayesDockProps) {
             onClick={() => setOpen(true)}
             title={`Open Sayes (${modKey()} + .)`}
             aria-label="Open Sayes"
-            className="fixed bottom-6 right-6 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan text-surface shadow-lg transition-transform duration-200 hover:scale-105"
+            style={{ bottom: `calc(2rem + ${GAP}px)` }}
+            className="fixed right-4 z-40 inline-flex h-14 w-14 items-center justify-center rounded-full bg-cyan text-surface shadow-lg transition-transform duration-200 hover:scale-105"
           >
             <span ref={origin} className="inline-flex">
               <SayesMark size={30} />

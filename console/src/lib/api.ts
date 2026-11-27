@@ -97,6 +97,8 @@ export type Violation = {
   car_plate: string;
   car_speed: number;
   timestamp: string;
+  /** The edge it was measured on. */
+  connection_id?: number | null;
 };
 
 /**
@@ -434,6 +436,26 @@ export type Diagnostics = {
   nodes: NodeDiagnostics[];
   connections: EdgeDiagnostics[];
 };
+
+/** Removes a checkpoint and its edges: deleted if it never had a violation, retired otherwise. */
+export function removeNode(
+  apiKey: string,
+  nodeId: number,
+): Promise<{ outcome: "deleted" | "retired"; id_in_project: number; connections_deleted: number[]; connections_retired: number[] }> {
+  return request(`/node/${nodeId}`, { method: "DELETE", apiKey });
+}
+
+/** Removes an edge: deleted if it never had a violation, retired otherwise. */
+export function removeConnection(apiKey: string, connectionId: number): Promise<{ outcome: "deleted" | "retired" }> {
+  return request(`/connection/${connectionId}`, { method: "DELETE", apiKey });
+}
+
+export type CameraPlace = { street: string | null; near: string | null; source: "places" | "osm" | "pending" };
+
+/** node_id -> the street it is on, for labels. */
+export function getCameraPlaces(projectId: number, apiKey: string, signal?: AbortSignal): Promise<Record<string, CameraPlace>> {
+  return request(`/project/${projectId}/camera-places`, { apiKey, signal });
+}
 
 export function getDiagnostics(
   projectId: number,

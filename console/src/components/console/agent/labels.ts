@@ -241,6 +241,6 @@ export const CURSOR_TOOLS = new Set([
 
 export const EXAMPLE_PROMPTS = [
   "Set up three checkpoints along the Corniche, speed limit 50, and connect them.",
-  "The camera at El Shatby moved 200 metres east, update it.",
+  "The camera near El Shatby moved 200 metres further along the Corniche, update it.",
   "Which edges had the most violations this week?",
 ];

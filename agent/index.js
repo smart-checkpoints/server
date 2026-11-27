@@ -22,6 +22,11 @@
 const express = require("express");
 const { config } = require("./config.js");
 const { places } = require("./places");
+const placesIndex = require("./places");
+const osm = require("./osm.js");
+
+/** "lat,lng" -> street from OSM; null while the lookup is still running. */
+const osmStreets = new Map();
 const { launchRun, activeRun, getRun, answerConfirmation, cancelRun } = require("./runner.js");
 const { createApiClient } = require("./api.js");
 const restore = require("./restore.js");
@@ -218,6 +223,43 @@ function mountAgent({ app, db, statements, authenticateAPIKey, requireOwnProject
     res.setHeader("content-type", "application/pdf");
     res.setHeader("content-disposition", `attachment; filename="${report.filename}"`);
     res.send(report.buffer);
+  });
+
+  /*
+   * Which street each camera is on, for the console's labels: the demo place
+   * list where it covers the camera, OpenStreetMap otherwise. OSM lookups are
+   * rate limited, so they run in the background and show up on a later read;
+   * this never waits on them.
+   */
+  app.get("/project/:id/camera-places", ...guard, async (req, res) => {
+    try {
+      const nodes = await statements.getProjectNodes(req.projectId, db);
+      const out = {};
+      for (const node of nodes) {
+        const street = placesIndex.streetAt(node.latitude, node.longitude);
+        const near = placesIndex.nearestLandmark(node.latitude, node.longitude, 250);
+        if (street) {
+          out[node.node_id] = { street, near: near ? near.name : null, source: "places" };
+          continue;
+        }
+        const key = `${node.latitude.toFixed(5)},${node.longitude.toFixed(5)}`;
+        if (osmStreets.has(key)) {
+          const known = osmStreets.get(key);
+          out[node.node_id] = { street: known, near: null, source: known ? "osm" : "pending" };
+          continue;
+        }
+        osmStreets.set(key, null);
+        osm.reverseStreet(node.latitude, node.longitude).then(
+          (street) => osmStreets.set(key, street),
+          () => osmStreets.delete(key),
+        );
+        out[node.node_id] = { street: null, near: null, source: "pending" };
+      }
+      res.json(out);
+    } catch (err) {
+      console.error("Error naming camera places:", err);
+      res.status(500).json({ error: "Failed to name camera places" });
+    }
   });
 
   /* -----------------------------------------------------------------------

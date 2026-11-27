@@ -331,4 +331,21 @@ async function nearby(latitude, longitude, radius) {
   };
 }
 
-module.exports = { geocode, snap, roadAt, nearby, OsmError };
+/** The street at a point, from Nominatim's reverse geocoder. Cached. */
+function reverseStreet(latitude, longitude) {
+  const key = `reverse:${latitude.toFixed(5)},${longitude.toFixed(5)}`;
+  return cached(key, async () => {
+    const params = new URLSearchParams({
+      lat: String(latitude),
+      lon: String(longitude),
+      format: "jsonv2",
+      zoom: "17",
+      "accept-language": "en,ar",
+    });
+    const row = await nominatimQueue(() => getJson(`${NOMINATIM}/reverse?${params}`));
+    const address = (row && row.address) || {};
+    return address.road || address.pedestrian || address.neighbourhood || address.suburb || null;
+  });
+}
+
+module.exports = { geocode, snap, roadAt, nearby, reverseStreet, OsmError };

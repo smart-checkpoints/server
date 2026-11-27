@@ -1825,6 +1825,7 @@ app.post(
         car_plate: carPlate,
         car_speed: violationData.carSpeed,
         timestamp: sightingTime,
+        connection_id: violationData.connectionId,
       });
     }
     // Only update the stored sighting when the request is not out-of-order;
@@ -2371,6 +2372,7 @@ async function calculateViolation(carPlate, nodeId, sightingTime) {
     timestamp: sightingTime,
     nodeId,
     carPlate,
+    connectionId: connection.connection_id,
     reason: null,
   };
 

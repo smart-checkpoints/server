@@ -3,19 +3,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import AddCheckpointDialog from "@/components/console/AddCheckpointDialog";
-import CanvasControls from "@/components/console/CanvasControls";
-import ConnectionEditor from "@/components/console/ConnectionEditor";
 import DiagnosticsPanel, {
   summariseNode,
 } from "@/components/console/DiagnosticsPanel";
-import DriverStatus from "@/components/console/DriverStatus";
 import GraphCanvas, {
   type EdgeDraft,
   type FlashSignal,
   type GraphCanvasHandle,
   type MoveDraft,
 } from "@/components/console/GraphCanvas";
-import GraphLegend from "@/components/console/GraphLegend";
 import MapView from "@/components/console/MapView";
 import MoveCheckpointDialog from "@/components/console/MoveCheckpointDialog";
 import NewConnectionDialog from "@/components/console/NewConnectionDialog";
@@ -25,18 +21,26 @@ import TestDrivePanel, {
   type TestDriveHandle,
   type VehicleFrame,
 } from "@/components/console/TestDrivePanel";
-import ViewToggle, { type ConsoleView } from "@/components/console/ViewToggle";
+import type { ConsoleView } from "@/components/console/ViewToggle";
 import ViolationsPanel from "@/components/console/ViolationsPanel";
 import SayesDock from "@/components/console/agent/SayesDock";
 import type { ReplayMask } from "@/components/console/agent/cursors/replayMask";
 import type { Highlights } from "@/components/console/agent/useAgent";
+import { CamerasDrawer, SectionsDrawer } from "@/components/console/shell/Drawers";
+import Inspector, { type Selection } from "@/components/console/shell/Inspector";
+import { countBySection, countThisWeek } from "@/components/console/shell/model";
+import { Menu, MenuDivider, MenuItem } from "@/components/console/shell/parts";
+import Rail, { type DrawerId } from "@/components/console/shell/Rail";
+import StatusBar from "@/components/console/shell/StatusBar";
+import TopBar from "@/components/console/shell/TopBar";
 import type { AgentUiControl } from "@/lib/agent";
-import Badge from "@/components/ui/Badge";
 import Button from "@/components/ui/Button";
 import EmptyState from "@/components/ui/EmptyState";
 import Nav from "@/components/ui/Nav";
+import { PanelDock } from "@/components/ui/Panel";
 import {
   createNode,
+  getCameraPlaces,
   getConnections,
   getDemo,
   getDiagnostics,
@@ -45,7 +49,11 @@ import {
   getMapDriverState,
   getNodes,
   getViolations,
+  isEnforced,
   moveNode,
+  removeConnection,
+  removeNode,
+  type CameraPlace,
   type CheckpointNode,
   type Connection,
   type Diagnostics,
@@ -53,8 +61,7 @@ import {
   type PathGeometry,
   type Violation,
 } from "@/lib/api";
-import { pluralise } from "@/lib/format";
-import { haversineMeters } from "@/lib/geo";
+import { haversineMeters, type LatLng } from "@/lib/geo";
 import type { BridgeSelection, BridgeVehicle } from "@/lib/mapbridge";
 import type { ConsoleSocket } from "@/lib/realtime";
 import { connectProject } from "@/lib/realtime";
@@ -62,6 +69,17 @@ import { clearSession, useConsoleSession } from "@/lib/session";
 
 /** A stable empty list, so the cursor layer is not re-run on every render. */
 const NO_HIGHLIGHTS: Highlights = { connectionIds: [], nodeIds: [], caption: "" };
+
+/** The drawer beside the rail, in px. The canvas frames what it leaves. */
+const DRAWER_WIDTH = 360;
+
+const DRAWER_KEYS: Record<string, DrawerId> = {
+  "1": "cameras",
+  "2": "sections",
+  "3": "violations",
+  "4": "quality",
+  "5": "settings",
+};
 
 export default function ProjectConsolePage() {
   /* `undefined` is "not read yet", `null` is "read, and there is none". The
@@ -136,6 +154,10 @@ export default function ProjectConsolePage() {
   const [geometryVersion, setGeometryVersion] = useState(0);
   const [loaded, setLoaded] = useState(false);
 
+  /* Which street each camera is on, for labels and the drawers. */
+  const [places, setPlaces] = useState<Record<string, CameraPlace>>({});
+  const [basemap, setBasemap] = useState(true);
+
   /* A demo project can drive a test car between checkpoints. */
   const [isDemo, setIsDemo] = useState(false);
   const [testDriveOpen, setTestDriveOpen] = useState(false);
@@ -145,12 +167,14 @@ export default function ProjectConsolePage() {
   const testDrive = useRef<TestDriveHandle>(null);
   const mapVehicle = useRef<((vehicle: BridgeVehicle) => void) | null>(null);
 
-  const [selected, setSelected] = useState<Connection | null>(null);
+  /* One drawer beside the rail at a time. A selection shows the inspector in
+     the same place, and closing it goes back to the drawer that was open. */
+  const [drawer, setDrawer] = useState<DrawerId | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ at: LatLng | null; x: number; y: number } | null>(null);
+
   const [draft, setDraft] = useState<EdgeDraft | null>(null);
   const [moveDraft, setMoveDraft] = useState<MoveDraft | null>(null);
-  const [showViolations, setShowViolations] = useState(false);
-  const [showDiagnostics, setShowDiagnostics] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [addingCheckpoint, setAddingCheckpoint] = useState(false);
   const [placeAt, setPlaceAt] = useState<{ lat: number; lng: number } | null>(
     null,
@@ -158,6 +182,7 @@ export default function ProjectConsolePage() {
 
   const router = useRouter();
   const canvas = useRef<GraphCanvasHandle>(null);
+  const stage = useRef<HTMLDivElement>(null);
   const socket = useRef<ConsoleSocket | null>(null);
   const flashSeq = useRef(0);
 
@@ -181,6 +206,36 @@ export default function ProjectConsolePage() {
       delete root.dataset.presentation;
     };
   }, [presentation]);
+
+  const selectedConnection =
+    selection?.kind === "section"
+      ? connections.find((edge) => edge.connection_id === selection.connectionId) ?? null
+      : null;
+  const selectedNode =
+    selection?.kind === "camera"
+      ? nodes.find((node) => node.node_id === selection.nodeId) ?? null
+      : null;
+  /* A selection whose camera or section went away is no selection. */
+  const inspecting: Selection | null = selectedNode || selectedConnection ? selection : null;
+  const drawerOpen = drawer !== null || inspecting !== null;
+
+  /* The canvas frames only what the drawer leaves; GraphCanvas reads this. */
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--drawer-inset", drawerOpen ? `${DRAWER_WIDTH}px` : "0px");
+    return () => {
+      root.style.removeProperty("--drawer-inset");
+    };
+  }, [drawerOpen]);
+
+  /* A drawer opening or closing reframes the network into the space left,
+     unless a selection is about to frame what it is about. */
+  const framedFor = useRef(false);
+  useEffect(() => {
+    if (framedFor.current === drawerOpen) return;
+    framedFor.current = drawerOpen;
+    if (!selection) canvas.current?.frame([], 450);
+  }, [drawerOpen, selection]);
 
   /* ---------------------------------------------------------------------
      The first read, then the live channel
@@ -309,9 +364,6 @@ export default function ProjectConsolePage() {
       setConnections((current) =>
         current.filter((edge) => edge.connection_id !== data.connection_id),
       );
-      setSelected((current) =>
-        current && current.connection_id === data.connection_id ? null : current,
-      );
       setGeometryVersion((version) => version + 1);
     });
 
@@ -352,6 +404,54 @@ export default function ProjectConsolePage() {
       socket.current = null;
     };
   }, [session]);
+
+  /* ---------------------------------------------------------------------
+     Street names
+     --------------------------------------------------------------------- */
+
+  /* Re-read whenever a camera appears, moves or goes; never per frame. */
+  const placesKey = useMemo(
+    () => nodes.map((n) => `${n.node_id}:${n.latitude.toFixed(5)},${n.longitude.toFixed(5)}`).join("|"),
+    [nodes],
+  );
+
+  useEffect(() => {
+    if (!session || !placesKey) return;
+    const controller = new AbortController();
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout>;
+
+    const read = async () => {
+      try {
+        const rows = await getCameraPlaces(session.project_id, session.apiKey, controller.signal);
+        if (controller.signal.aborted) return;
+        setPlaces(rows);
+        // Streets outside the demo list come from OpenStreetMap in the
+        // background, so a pending one is asked for again shortly.
+        tries += 1;
+        if (tries < 6 && Object.values(rows).some((place) => place.source === "pending")) {
+          timer = setTimeout(() => void read(), 2500);
+        }
+      } catch {
+        // Labels are a convenience; the graph works without them.
+      }
+    };
+    timer = setTimeout(() => void read(), 300);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [session, placesKey]);
+
+  /** node_id -> "Street · near Landmark", for the canvas. */
+  const nodeLabels = useMemo(() => {
+    const labels: Record<number, string> = {};
+    for (const [id, place] of Object.entries(places)) {
+      if (place.street) labels[Number(id)] = place.near ? `${place.street} · near ${place.near}` : place.street;
+    }
+    return labels;
+  }, [places]);
 
   /* ---------------------------------------------------------------------
      The map view
@@ -415,23 +515,18 @@ export default function ProjectConsolePage() {
     if (next === "map") setMapEverOpened(true);
   }, []);
 
-  /** An edge chosen on the map opens the same editor a click on the graph does. */
+  /** An edge chosen on the map opens the same inspector a click on the graph does. */
   const selectFromMap = useCallback(
-    (selection: BridgeSelection) => {
-      if (selection.kind === "node" && testDriveOpen) {
-        testDrive.current?.pick(selection.id);
+    (picked: BridgeSelection) => {
+      if (picked.kind === "node" && testDriveOpen) {
+        testDrive.current?.pick(picked.id);
         return;
       }
-      if (selection.kind === "edge") {
-        setSelected(
-          connections.find((edge) => edge.connection_id === selection.id) ??
-            null,
-        );
-        return;
-      }
-      if (selection.kind === null) setSelected(null);
+      if (picked.kind === "edge") setSelection({ kind: "section", connectionId: picked.id });
+      else if (picked.kind === "node") setSelection({ kind: "camera", nodeId: picked.id });
+      else if (picked.kind === null) setSelection(null);
     },
-    [connections, testDriveOpen],
+    [testDriveOpen],
   );
 
   /** The test car, drawn by whichever views exist. Called every frame. */
@@ -463,7 +558,7 @@ export default function ProjectConsolePage() {
     if (!next) setTestDriveOpen(false);
   }, []);
 
-  /** The add dialog, blank from a button or pre-filled from a map right-click. */
+  /** The add dialog, blank from a button or pre-filled from a right-click. */
   const openAddCheckpoint = useCallback(
     (position: { lat: number; lng: number } | null) => {
       setPlaceAt(position);
@@ -480,7 +575,7 @@ export default function ProjectConsolePage() {
    * a camera's real position and every distance measured to it still stops
    * being true. The map driver proposes; nothing here writes on its say-so.
    */
-  const moveFromMap = useCallback(
+  const proposeMove = useCallback(
     (nodeId: number, to: { lat: number; lng: number }) => {
       // A test drive picks checkpoints; it never moves them.
       if (testDriveOpen) return;
@@ -496,63 +591,6 @@ export default function ProjectConsolePage() {
       });
     },
     [nodes, testDriveOpen],
-  );
-
-  /* ---------------------------------------------------------------------
-     Writes
-     --------------------------------------------------------------------- */
-
-  const createEdge = useCallback(
-    (edge: { speedLimitKmh: number; distanceMeters?: number }) => {
-      if (!draft) return;
-      socket.current?.emit("create-connection", {
-        from_node_id: draft.from.node_id,
-        to_node_id: draft.to.node_id,
-        speed_limit: edge.speedLimitKmh,
-        ...(edge.distanceMeters === undefined
-          ? {}
-          : { distance: edge.distanceMeters }),
-      });
-      setDraft(null);
-    },
-    [draft],
-  );
-
-  const saveEdge = useCallback(
-    (edge: { distanceMeters?: number; speedLimitKmh: number }) => {
-      if (!selected) return;
-      // An omitted distance means "leave it and its status alone" - the case
-      // where a driver owns the number, or where nobody has resolved it yet.
-      socket.current?.emit("update-connection", {
-        connection_id: selected.connection_id,
-        ...(edge.distanceMeters === undefined
-          ? {}
-          : { distance: edge.distanceMeters }),
-        speed_limit: edge.speedLimitKmh,
-      });
-
-      // The server echoes `connection-updated` to the room, this tab included,
-      // but the panel should not sit on a stale value while that round trip
-      // happens.
-      setConnections((current) =>
-        current.map((row) =>
-          row.connection_id === selected.connection_id
-            ? {
-                ...row,
-                speed_limit: edge.speedLimitKmh,
-                ...(edge.distanceMeters === undefined
-                  ? {}
-                  : {
-                      distance: edge.distanceMeters,
-                      distance_status: "ok" as const,
-                    }),
-              }
-            : row,
-        ),
-      );
-      setSelected(null);
-    },
-    [selected],
   );
 
   /* ---------------------------------------------------------------------
@@ -576,15 +614,153 @@ export default function ProjectConsolePage() {
     }
   }, [session]);
 
+  /* ---------------------------------------------------------------------
+     Selection and drawers
+     --------------------------------------------------------------------- */
+
+  /** Brings these cameras into the part of the canvas the drawer leaves. */
+  const frameNodes = useCallback(
+    (ids: number[]) => {
+      const points = nodes
+        .filter((node) => ids.includes(node.node_id))
+        .map((node) => ({ lat: node.latitude, lng: node.longitude }));
+      if (points.length > 0) canvas.current?.focus(points, 600);
+    },
+    [nodes],
+  );
+
+  /** Selects from a list: frames the camera with its neighbours, or the section. */
+  const pickFromList = useCallback(
+    (next: Selection) => {
+      setSelection(next);
+      if (next.kind === "section") {
+        const edge = connections.find((c) => c.connection_id === next.connectionId);
+        if (edge) frameNodes([edge.from_node_id, edge.to_node_id]);
+      } else {
+        const around = connections
+          .filter((c) => c.from_node_id === next.nodeId || c.to_node_id === next.nodeId)
+          .flatMap((c) => [c.from_node_id, c.to_node_id]);
+        frameNodes([next.nodeId, ...around]);
+      }
+    },
+    [connections, frameNodes],
+  );
+
+  /** Selects from the canvas: the view stays put unless the drawer would cover it. */
+  const pickOnCanvas = useCallback(
+    (next: Selection) => {
+      setSelection(next);
+      const ids =
+        next.kind === "camera"
+          ? [next.nodeId]
+          : (() => {
+              const edge = connections.find((c) => c.connection_id === next.connectionId);
+              return edge ? [edge.from_node_id, edge.to_node_id] : [];
+            })();
+      const left = (stage.current?.getBoundingClientRect().left ?? 0) + DRAWER_WIDTH + 24;
+      const hidden = ids.some((id) => {
+        const at = canvas.current?.nodeToClient(id);
+        return at ? at.x < left : false;
+      });
+      if (hidden) frameNodes(ids);
+    },
+    [connections, frameNodes],
+  );
+
+  const toggleDrawer = useCallback(
+    (next: DrawerId) => {
+      setContextMenu(null);
+      setSelection(null);
+      const opening = !(drawer === next && !inspecting);
+      setDrawer(opening ? next : null);
+      // Opening Quality is the "on demand" in "recompute on demand": what is
+      // on screen was true when it was fetched, and a node may have moved.
+      if (opening && next === "quality") void recheck();
+    },
+    [drawer, inspecting, recheck],
+  );
+
+  /* ---------------------------------------------------------------------
+     Writes
+     --------------------------------------------------------------------- */
+
+  const createEdge = useCallback(
+    (edge: { speedLimitKmh: number; distanceMeters?: number }) => {
+      if (!draft) return;
+      socket.current?.emit("create-connection", {
+        from_node_id: draft.from.node_id,
+        to_node_id: draft.to.node_id,
+        speed_limit: edge.speedLimitKmh,
+        ...(edge.distanceMeters === undefined
+          ? {}
+          : { distance: edge.distanceMeters }),
+      });
+      setDraft(null);
+    },
+    [draft],
+  );
+
+  const saveEdge = useCallback(
+    (target: Connection, edge: { distanceMeters?: number; speedLimitKmh: number }) => {
+      // An omitted distance means "leave it and its status alone" - the case
+      // where a driver owns the number, or where nobody has resolved it yet.
+      socket.current?.emit("update-connection", {
+        connection_id: target.connection_id,
+        ...(edge.distanceMeters === undefined
+          ? {}
+          : { distance: edge.distanceMeters }),
+        speed_limit: edge.speedLimitKmh,
+      });
+
+      // The server echoes `connection-updated` to the room, this tab included,
+      // but the inspector should not sit on a stale value while that round
+      // trip happens.
+      setConnections((current) =>
+        current.map((row) =>
+          row.connection_id === target.connection_id
+            ? {
+                ...row,
+                speed_limit: edge.speedLimitKmh,
+                ...(edge.distanceMeters === undefined
+                  ? {}
+                  : {
+                      distance: edge.distanceMeters,
+                      distance_status: "ok" as const,
+                    }),
+              }
+            : row,
+        ),
+      );
+    },
+    [],
+  );
+
+  /* Removal goes through the same endpoints as Sayes: deleted when nothing was
+     ever recorded on it, retired otherwise. The realtime channel echoes it. */
+  const removeCamera = useCallback(
+    async (node: CheckpointNode) => {
+      if (!session) return;
+      await removeNode(session.apiKey, node.node_id);
+    },
+    [session],
+  );
+
+  const removeSection = useCallback(
+    async (edge: Connection) => {
+      if (!session) return;
+      await removeConnection(session.apiKey, edge.connection_id);
+    },
+    [session],
+  );
+
   /* What Sayes asks the console to show. Display only; changes nothing. */
   const agentControl = useCallback(
     (control: AgentUiControl) => {
       if (control.action === "view") {
         openView(control.view);
       } else if (control.action === "panel") {
-        setShowDiagnostics(control.panel === "quality");
-        setShowViolations(control.panel === "violations");
-        setShowSettings(false);
+        setSelection(null);
+        setDrawer(control.panel === "none" ? null : control.panel);
         if (control.panel === "quality") void recheck();
       } else if (control.action === "frame") {
         const ids = new Set(control.node_ids);
@@ -614,6 +790,9 @@ export default function ProjectConsolePage() {
   }, [diagnostics]);
 
   const flaggedCount = Object.keys(nodeWarnings).length;
+  const counts = useMemo(() => countBySection(violations), [violations]);
+  const violationsThisWeek = useMemo(() => countThisWeek(violations), [violations]);
+  const unmeasured = connections.filter((edge) => !isEnforced(edge)).length;
 
   /**
    * Commits a dragged checkpoint.
@@ -653,6 +832,12 @@ export default function ProjectConsolePage() {
     router.push("/");
   }, [router]);
 
+  const toggleTestDrive = useCallback(() => {
+    setTestDriveOpen((open) => !open);
+    setPicks({ start: null, end: null });
+    setSelection(null);
+  }, []);
+
   /* ---------------------------------------------------------------------
      Keyboard
      --------------------------------------------------------------------- */
@@ -661,13 +846,21 @@ export default function ProjectConsolePage() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target && /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return;
+      if (target?.isContentEditable) return;
 
+      // Esc closes the nearest thing first: the menu, then the selection,
+      // then the drawer.
       if (event.key === "Escape") {
-        setSelected(null);
-        cancelMove();
-        setShowViolations(false);
-        setShowDiagnostics(false);
-        setShowSettings(false);
+        if (contextMenu) setContextMenu(null);
+        else if (moveDraft) cancelMove();
+        else if (inspecting) setSelection(null);
+        else setDrawer(null);
+        return;
+      }
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const drawerKey = DRAWER_KEYS[event.key];
+      if (drawerKey) {
+        toggleDrawer(drawerKey);
         return;
       }
       if (event.key === "+" || event.key === "=") canvas.current?.zoomBy(1.2);
@@ -678,19 +871,14 @@ export default function ProjectConsolePage() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [cancelMove]);
+  }, [cancelMove, contextMenu, inspecting, moveDraft, toggleDrawer]);
 
   /* ---------------------------------------------------------------------
      Render
      --------------------------------------------------------------------- */
 
   if (session === undefined) {
-    return (
-      <>
-        <Nav sticky={false} />
-        <div className="console-shell bg-bg" />
-      </>
-    );
+    return <div className="h-dvh bg-bg" />;
   }
 
   if (session === null) {
@@ -702,299 +890,266 @@ export default function ProjectConsolePage() {
     );
   }
 
+  const showingCaption =
+    agentHighlights.caption &&
+    (agentHighlights.connectionIds.length > 0 || agentHighlights.nodeIds.length > 0);
+
   return (
-    <>
-      <Nav
-        sticky={false}
-        context={
-          <div className="flex min-w-0 items-center gap-3">
-            <span className="truncate font-display text-sm font-bold text-text">
-              {session.project_name}
-            </span>
-            {isDemo ? (
-              <Badge tone="accent" mono>
-                Demo
-              </Badge>
-            ) : null}
-            <DriverStatus connected={driverConnected} />
-          </div>
+    <div className="console-app flex h-dvh flex-col overflow-hidden bg-bg">
+      <TopBar
+        session={session}
+        isDemo={isDemo}
+        driverConnected={driverConnected}
+        realtimeConnected={realtimeConnected}
+        mapDriver={mapDriver}
+        view={activeView}
+        mapAvailable={mapAvailable}
+        mapUnavailableReason={
+          mapDriver.status === "approved"
+            ? "The approved map driver is not running."
+            : mapDriver.pending_url
+              ? "A map driver is waiting to be approved, under Settings."
+              : "No map driver has offered a map view for this project."
         }
-        action={
-          <div className="flex items-center gap-2">
-            {!presentation ? (
-              <>
-                <ViewToggle
-                  view={activeView}
-                  onChange={openView}
-                  mapAvailable={mapAvailable}
-                  mapUnavailableReason={
-                    mapDriver.status === "approved"
-                      ? "The approved map driver is not running."
-                      : mapDriver.pending_url
-                        ? "A map driver is waiting to be approved, under Project."
-                        : "No map driver has offered a map view for this project."
-                  }
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    setShowSettings((open) => !open);
-                    setShowViolations(false);
-                    setShowDiagnostics(false);
-                  }}
-                >
-                  Project
-                </Button>
-              </>
-            ) : null}
-            <Button
-              variant="secondary"
-              size="sm"
-              data-agent-target="quality"
-              onClick={() => {
-                // Opening the panel is the "on demand" in "recompute on
-                // demand": what is on screen was true when it was fetched,
-                // and a node may have moved since.
-                const opening = !showDiagnostics;
-                setShowDiagnostics(opening);
-                setShowViolations(false);
-                setShowSettings(false);
-                if (opening) void recheck();
-              }}
-            >
-              Quality
-              {flaggedCount > 0 ? (
-                <span className="ml-2 font-mono text-xs opacity-80">
-                  {flaggedCount}
-                </span>
-              ) : null}
-            </Button>
-            <Button
-              size="sm"
-              data-agent-target="violations"
-              onClick={() => {
-                setShowViolations((open) => !open);
-                setShowSettings(false);
-                setShowDiagnostics(false);
-              }}
-            >
-              Violations
-              {violations.length > 0 ? (
-                <span className="ml-2 font-mono text-xs opacity-80">
-                  {violations.length}
-                </span>
-              ) : null}
-            </Button>
-          </div>
-        }
+        onView={openView}
+        presentation={presentation}
+        onTogglePresentation={togglePresentation}
+        onSignOut={signOut}
       />
 
-      <div className="console-shell flex bg-bg">
-        <div className="relative min-w-0 flex-1" data-cursor-stage>
-        <GraphCanvas
-          ref={canvas}
-          nodes={shownNodes}
-          connections={shownConnections}
-          congestionTargets={congestion}
-          flash={flash}
-          nodeWarnings={nodeWarnings}
-          selectedConnectionId={selected?.connection_id ?? null}
-          onSelectConnection={setSelected}
-          onDraftEdge={setDraft}
-          onDraftMove={setMoveDraft}
-          highlightedConnectionIds={agentHighlights.connectionIds}
-          highlightedNodeIds={agentHighlights.nodeIds}
-          showHover={!presentation}
-          onClickNode={
-            testDriveOpen
-              ? (node) => testDrive.current?.pick(node.node_id)
-              : undefined
-          }
-          pickMode={testDriveOpen}
-          picks={testDriveOpen ? picks : undefined}
+      <div className="relative flex min-h-0 flex-1">
+        <Rail
+          drawer={inspecting ? null : drawer}
+          onDrawer={toggleDrawer}
+          violationsThisWeek={violationsThisWeek}
+          flagged={flaggedCount}
+          isDemo={isDemo}
+          testDriveOpen={testDriveOpen}
+          onTestDrive={toggleTestDrive}
         />
 
-        {agentHighlights.caption && (agentHighlights.connectionIds.length > 0 || agentHighlights.nodeIds.length > 0) ? (
-          <div
-            className="sayes-clear pointer-events-none absolute inset-x-0 top-4 z-10 flex justify-center"
-            style={{ right: "var(--sayes-inset, 0px)" }}
-          >
-            <span data-cursor-avoid className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
-              {agentHighlights.caption}
-            </span>
-          </div>
-        ) : null}
-
-        {mapMounted && mapDriver.url && mapDriver.origin ? (
-          <MapView
-            active={activeView === "map"}
-            projectId={session.project_id}
-            url={mapDriver.url}
-            origin={mapDriver.origin}
-            nodes={nodes}
-            connections={connections}
-            geometry={geometry}
-            congestion={congestion}
-            diagnostics={diagnostics}
-            selectedConnectionId={selected?.connection_id ?? null}
-            onSelect={selectFromMap}
-            onNodeMoved={moveFromMap}
-            onPlace={openAddCheckpoint}
-            vehicleSinkRef={mapVehicle}
-            mode={{
-              testDrive: testDriveOpen,
-              start: testDriveOpen ? picks.start : null,
-              end: testDriveOpen ? picks.end : null,
+        <div ref={stage} className="relative min-w-0 flex-1 overflow-hidden" data-cursor-stage>
+          <GraphCanvas
+            ref={canvas}
+            nodes={shownNodes}
+            connections={shownConnections}
+            congestionTargets={congestion}
+            flash={flash}
+            nodeWarnings={nodeWarnings}
+            selectedConnectionId={selectedConnection?.connection_id ?? null}
+            selectedNodeId={selectedNode?.node_id ?? null}
+            nodeLabels={nodeLabels}
+            basemap={basemap}
+            onSelectConnection={(edge) => {
+              setContextMenu(null);
+              if (edge) pickOnCanvas({ kind: "section", connectionId: edge.connection_id });
+              else setSelection(null);
             }}
+            onDraftEdge={setDraft}
+            onDraftMove={setMoveDraft}
+            highlightedConnectionIds={agentHighlights.connectionIds}
+            highlightedNodeIds={agentHighlights.nodeIds}
+            showHover={!presentation}
+            onClickNode={(node) => {
+              setContextMenu(null);
+              if (testDriveOpen) testDrive.current?.pick(node.node_id);
+              else pickOnCanvas({ kind: "camera", nodeId: node.node_id });
+            }}
+            onContextMenu={(at, client) => {
+              if (testDriveOpen) return;
+              setContextMenu({ at, x: client.x, y: client.y });
+            }}
+            pickMode={testDriveOpen}
+            picks={testDriveOpen ? picks : undefined}
           />
-        ) : null}
 
-        {/* The overlay does not take pointer events; each control opts back in. */}
-        <div
-          className="sayes-clear pointer-events-none absolute inset-0 p-4"
-          style={{ paddingRight: "calc(1rem + var(--sayes-inset, 0px))" }}
-        >
-          <div className="flex h-full flex-col justify-between">
-            <div className="flex items-start justify-between gap-4">
-              {!presentation ? (
-                <div data-cursor-avoid className="pointer-events-auto flex items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => openAddCheckpoint(null)}
-                  >
-                    Add checkpoint
-                  </Button>
-                  {isDemo ? (
-                    <Button
-                      size="sm"
-                      variant={testDriveOpen ? "primary" : "secondary"}
-                      onClick={() => {
-                        setTestDriveOpen((open) => !open);
-                        setPicks({ start: null, end: null });
-                        setSelected(null);
-                      }}
-                    >
-                      Test drive
-                    </Button>
-                  ) : null}
-                  <span className="hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm sm:inline">
-                    {pluralise(nodes.length, "checkpoint")} ·{" "}
-                    {pluralise(connections.length, "edge")}
-                  </span>
-                </div>
-              ) : (
-                <span />
-              )}
-
-              {/* Framing and zooming are the graph's own; the map has its own. */}
-              {activeView === "graph" && !presentation ? (
-                <div data-cursor-avoid>
-                  <CanvasControls
-                    onFit={() => canvas.current?.fit()}
-                    onZoomIn={() => canvas.current?.zoomBy(1.2)}
-                    onZoomOut={() => canvas.current?.zoomBy(1 / 1.2)}
-                  />
-                </div>
-              ) : null}
-            </div>
-
+          {showingCaption ? (
             <div
-              className="sayes-clear flex items-end justify-between gap-4"
-              style={{ paddingRight: "calc(var(--sayes-bottom-inset, 0px) - var(--sayes-inset, 0px))" }}
+              className="sayes-clear pointer-events-none absolute top-4 z-10 flex justify-center"
+              style={{ left: "var(--drawer-inset, 0px)", right: "var(--sayes-inset, 0px)" }}
             >
-              {activeView === "graph" && !presentation ? (
-                <div data-cursor-avoid>
-                  <GraphLegend />
-                </div>
-              ) : (
-                <span />
-              )}
-              {testDriveOpen && isDemo ? (
-                <TestDrivePanel
-                  ref={testDrive}
-                  apiKey={session.apiKey}
-                  nodes={nodes}
-                  connections={connections}
-                  geometry={geometry}
-                  onVehicle={showVehicle}
-                  onPicks={setPicks}
-                  onClose={() => setTestDriveOpen(false)}
-                />
-              ) : selected ? (
-                <ConnectionEditor
-                  connection={selected}
-                  nodes={nodes}
-                  driverConnected={driverConnected}
-                  onCancel={() => setSelected(null)}
-                  onSave={saveEdge}
-                />
-              ) : activeView === "graph" && !presentation ? (
-                <p data-cursor-avoid className="pointer-events-none hidden rounded-full border border-border bg-surface px-3.5 py-1.5 font-mono text-xs text-text-dim shadow-sm lg:inline">
-                  Drag between checkpoints to link · shift-drag to move one · F
-                  to frame
-                </p>
-              ) : null}
+              <span data-cursor-avoid className="rounded-full border border-cyan bg-surface px-4 py-1.5 text-sm font-medium text-cyan-dark shadow-sm">
+                {agentHighlights.caption}
+              </span>
             </div>
-          </div>
-        </div>
+          ) : null}
 
-        {loaded &&
-        nodes.length === 0 &&
-        activeView === "graph" &&
-        !presentation &&
-        !agentActive ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
-            <div className="pointer-events-auto max-w-md rounded-2xl border border-border bg-surface shadow-lg">
-              <EmptyState
-                title="No checkpoints yet"
-                body="Cameras create checkpoints as they come online, over the REST API. You can also place one by coordinate to lay the graph out ahead of them."
-                action={
-                  <Button
-                    size="md"
-                    arrow
-                    onClick={() => openAddCheckpoint(null)}
-                  >
-                    Add checkpoint
-                  </Button>
-                }
+          {mapMounted && mapDriver.url && mapDriver.origin ? (
+            <MapView
+              active={activeView === "map"}
+              projectId={session.project_id}
+              url={mapDriver.url}
+              origin={mapDriver.origin}
+              nodes={nodes}
+              connections={connections}
+              geometry={geometry}
+              congestion={congestion}
+              diagnostics={diagnostics}
+              selectedConnectionId={selectedConnection?.connection_id ?? null}
+              onSelect={selectFromMap}
+              onNodeMoved={proposeMove}
+              onPlace={openAddCheckpoint}
+              vehicleSinkRef={mapVehicle}
+              mode={{
+                testDrive: testDriveOpen,
+                start: testDriveOpen ? picks.start : null,
+                end: testDriveOpen ? picks.end : null,
+              }}
+            />
+          ) : null}
+
+          {testDriveOpen && isDemo ? (
+            <div
+              className="pointer-events-none absolute inset-0 z-20 flex items-end p-4"
+              style={{ paddingLeft: "calc(1rem + var(--drawer-inset, 0px))" }}
+            >
+              <TestDrivePanel
+                ref={testDrive}
+                apiKey={session.apiKey}
+                nodes={nodes}
+                connections={connections}
+                geometry={geometry}
+                onVehicle={showVehicle}
+                onPicks={setPicks}
+                onClose={() => setTestDriveOpen(false)}
               />
             </div>
-          </div>
-        ) : null}
+          ) : null}
 
-        <SettingsPanel
-          open={showSettings}
-          onClose={() => setShowSettings(false)}
-          session={session}
-          nodeCount={nodes.length}
-          connectionCount={connections.length}
-          driverConnected={driverConnected}
-          realtimeConnected={realtimeConnected}
-          mapDriver={mapDriver}
-          onMapDriverChange={setMapDriver}
-          isDemo={isDemo}
-          onDemoChange={changeDemo}
-          onSignOut={signOut}
-        />
+          {loaded &&
+          nodes.length === 0 &&
+          activeView === "graph" &&
+          !presentation &&
+          !agentActive ? (
+            <div
+              className="sayes-clear pointer-events-none absolute inset-y-0 flex items-center justify-center p-6"
+              style={{ left: "var(--drawer-inset, 0px)", right: "var(--sayes-inset, 0px)" }}
+            >
+              <div className="pointer-events-auto max-w-md rounded-2xl border border-border bg-surface shadow-lg">
+                <EmptyState
+                  title="No cameras yet"
+                  body="Cameras create checkpoints as they come online, over the REST API. You can also place one by coordinate, right-click the canvas, or ask Sayes to lay the network out."
+                  action={
+                    <Button size="md" arrow onClick={() => openAddCheckpoint(null)}>
+                      Add camera
+                    </Button>
+                  }
+                />
+              </div>
+            </div>
+          ) : null}
 
-        <DiagnosticsPanel
-          open={showDiagnostics}
-          onClose={() => setShowDiagnostics(false)}
-          diagnostics={diagnostics}
-          checkedAt={checkedAt}
-          busy={checking}
-          error={checkError}
-          onRecheck={() => void recheck()}
-        />
+          <PanelDock.Provider value>
+            <CamerasDrawer
+              open={drawer === "cameras" && !inspecting}
+              onClose={() => setDrawer(null)}
+              nodes={nodes}
+              connections={connections}
+              places={places}
+              warnings={nodeWarnings}
+              onPick={(node) => pickFromList({ kind: "camera", nodeId: node.node_id })}
+              onAdd={() => openAddCheckpoint(null)}
+            />
+            <SectionsDrawer
+              open={drawer === "sections" && !inspecting}
+              onClose={() => setDrawer(null)}
+              nodes={nodes}
+              connections={connections}
+              places={places}
+              counts={counts}
+              cameraOf={cameraOf}
+              onPick={(edge) => pickFromList({ kind: "section", connectionId: edge.connection_id })}
+            />
+            <ViolationsPanel
+              open={drawer === "violations" && !inspecting}
+              onClose={() => setDrawer(null)}
+              violations={violations}
+              liveCount={liveViolations}
+              connections={connections}
+              cameraOf={cameraOf}
+            />
+            <DiagnosticsPanel
+              open={drawer === "quality" && !inspecting}
+              onClose={() => setDrawer(null)}
+              diagnostics={diagnostics}
+              checkedAt={checkedAt}
+              busy={checking}
+              error={checkError}
+              onRecheck={() => void recheck()}
+            />
+            <SettingsPanel
+              open={drawer === "settings" && !inspecting}
+              onClose={() => setDrawer(null)}
+              session={session}
+              nodeCount={nodes.length}
+              connectionCount={connections.length}
+              driverConnected={driverConnected}
+              realtimeConnected={realtimeConnected}
+              mapDriver={mapDriver}
+              onMapDriverChange={setMapDriver}
+              isDemo={isDemo}
+              onDemoChange={changeDemo}
+              onSignOut={signOut}
+            />
+            <Inspector
+              selection={inspecting}
+              onClose={() => setSelection(null)}
+              onSelect={pickFromList}
+              nodes={nodes}
+              connections={connections}
+              places={places}
+              counts={counts}
+              warnings={nodeWarnings}
+              cameraOf={cameraOf}
+              driverConnected={driverConnected}
+              onMove={(node, to) => proposeMove(node.node_id, to)}
+              onRemoveCamera={removeCamera}
+              onRemoveSection={removeSection}
+              onSaveSection={saveEdge}
+            />
+          </PanelDock.Provider>
 
-        <ViolationsPanel
-          open={showViolations}
-          onClose={() => setShowViolations(false)}
-          violations={violations}
-          liveCount={liveViolations}
-        />
+          {contextMenu ? (
+            <Menu
+              onClose={() => setContextMenu(null)}
+              className="fixed w-56"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+            >
+              <MenuItem
+                onClick={() => {
+                  const at = contextMenu.at;
+                  setContextMenu(null);
+                  openAddCheckpoint(at ? { lat: at.lat, lng: at.lng } : null);
+                }}
+              >
+                Add camera here
+              </MenuItem>
+              <MenuItem
+                hint="F"
+                onClick={() => {
+                  setContextMenu(null);
+                  canvas.current?.fit();
+                }}
+              >
+                Fit the network
+              </MenuItem>
+              {contextMenu.at ? (
+                <>
+                  <MenuDivider />
+                  <MenuItem
+                    hint={`${contextMenu.at.lat.toFixed(5)}, ${contextMenu.at.lng.toFixed(5)}`}
+                    onClick={() => {
+                      const at = contextMenu.at;
+                      setContextMenu(null);
+                      if (at) void navigator.clipboard?.writeText(`${at.lat.toFixed(6)}, ${at.lng.toFixed(6)}`);
+                    }}
+                  >
+                    Copy
+                  </MenuItem>
+                </>
+              ) : null}
+            </Menu>
+          ) : null}
         </div>
 
         <SayesDock
@@ -1010,6 +1165,18 @@ export default function ProjectConsolePage() {
           onReplayMask={setReplayMask}
         />
       </div>
+
+      <StatusBar
+        canvas={canvas}
+        cameras={nodes.length}
+        sections={connections.length}
+        unmeasured={unmeasured}
+        violationsThisWeek={violationsThisWeek}
+        graph={activeView === "graph"}
+        basemap={basemap}
+        onBasemap={setBasemap}
+        hints={!presentation}
+      />
 
       <NewConnectionDialog
         draft={draft}
@@ -1031,6 +1198,6 @@ export default function ProjectConsolePage() {
         onClose={() => setAddingCheckpoint(false)}
         onCreate={addCheckpoint}
       />
-    </>
+    </div>
   );
 }

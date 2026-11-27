@@ -41,9 +41,9 @@ const entries = [
   },
 ];
 
-export default function GraphLegend() {
+export default function GraphLegend({ className }: { className?: string } = {}) {
   return (
-    <div className="pointer-events-auto w-56 rounded-2xl border border-border bg-surface p-4 shadow-md">
+    <div className={className ?? "pointer-events-auto w-56 rounded-2xl border border-border bg-surface p-4 shadow-md"}>
       <p className="font-mono text-[0.6875rem] font-semibold uppercase tracking-[0.14em] text-text-dim">
         Legend
       </p>

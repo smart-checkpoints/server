@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/cn";
 import { ease } from "@/lib/motion";
@@ -14,7 +14,20 @@ type PanelProps = {
   /** Sits at the bottom of the panel, outside the scrolling body. */
   footer?: ReactNode;
   className?: string;
+  /**
+   * The console's drawer: full height beside the rail, square, over the
+   * canvas. Only one is open at a time, so it swaps rather than slides.
+   */
+  docked?: boolean;
+  /** Extra controls in the header, before the close button. */
+  actions?: ReactNode;
 };
+
+/**
+ * Panels inside this provider are the console drawer beside the rail, unless
+ * a panel says otherwise.
+ */
+export const PanelDock = createContext(false);
 
 /**
  * A drawer over the graph.
@@ -32,9 +45,13 @@ export default function Panel({
   children,
   footer,
   className,
+  docked: dockedProp,
+  actions,
 }: PanelProps) {
+  const inDock = useContext(PanelDock);
+  const docked = dockedProp ?? inDock;
   const reduceMotion = useReducedMotion();
-  const offset = side === "right" ? 24 : -24;
+  const offset = docked ? -10 : side === "right" ? 24 : -24;
 
   return (
     <AnimatePresence>
@@ -46,23 +63,29 @@ export default function Panel({
           initial={reduceMotion ? false : { opacity: 0, x: offset }}
           animate={{ opacity: 1, x: 0 }}
           exit={reduceMotion ? { opacity: 0 } : { opacity: 0, x: offset }}
-          transition={{ duration: 0.28, ease }}
+          transition={{ duration: docked ? 0.18 : 0.28, ease }}
           className={cn(
-            "pointer-events-auto absolute top-4 bottom-4 z-30 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col",
-            "overflow-hidden rounded-2xl border border-border bg-surface shadow-lg",
-            side === "right" ? "sayes-clear" : "left-4",
+            docked
+              ? "pointer-events-auto absolute inset-y-0 left-0 z-30 flex w-[360px] flex-col border-r border-border bg-surface shadow-lg"
+              : cn(
+                  "pointer-events-auto absolute top-4 bottom-4 z-30 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col",
+                  "overflow-hidden rounded-2xl border border-border bg-surface shadow-lg",
+                  side === "right" ? "sayes-clear" : "left-4",
+                ),
             className,
           )}
           // A right-hand panel sits beside Sayes's floating panel, not under it.
-          style={side === "right" ? { right: "calc(1rem + var(--sayes-inset, 0px))" } : undefined}
+          style={!docked && side === "right" ? { right: "calc(1rem + var(--sayes-inset, 0px))" } : undefined}
         >
-          <header className="flex items-center justify-between gap-4 border-b border-border px-5 py-4">
-            <h2 className="font-display text-base font-bold text-text">{title}</h2>
+          <header className={cn("flex items-center gap-2 border-b border-border", docked ? "h-14 px-4" : "justify-between gap-4 px-5 py-4")}>
+            <h2 className={cn("font-display text-base font-bold text-text", docked && "min-w-0 flex-1 truncate")}>{title}</h2>
+            {actions}
             <button
               type="button"
               onClick={onClose}
               aria-label={`Close ${title.toLowerCase()}`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full text-text-dim transition-colors duration-200 hover:bg-surface-hover hover:text-cyan-dark"
+              title="Close · Esc"
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-text-dim transition-colors duration-200 hover:bg-surface-hover hover:text-text"
             >
               <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
                 <path

@@ -80,7 +80,7 @@ export default function SettingsPanel({
     <Panel
       open={open}
       onClose={onClose}
-      title="Project"
+      title="Settings"
       side="left"
       footer={
         <Button variant="secondary" size="sm" onClick={onSignOut} className="w-full">

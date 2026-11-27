@@ -18,6 +18,7 @@ import type { AgentAttachment, AgentEffort, AgentUiControl } from "@/lib/agent";
 import { cn } from "@/lib/cn";
 import { houseEase } from "@/lib/ease";
 import CursorLayer from "./CursorLayer";
+import { DEFAULT_LEAD_MS } from "./cursors/director";
 import type { ReplayMask } from "./cursors/replayMask";
 import Markdown from "./Markdown";
 import { ReportCard, RestoreButton, RestoreContext, RestorePointList } from "./RestorePoints";
@@ -358,7 +359,7 @@ export default function SayesDock(props: SayesDockProps) {
         subscribe={agent.subscribe}
         canvas={props.canvas}
         origin={origin}
-        leadMs={info?.cursor_lead_ms ?? 850}
+        leadMs={info?.cursor_lead_ms ?? DEFAULT_LEAD_MS}
         cameraOf={cameraOf}
         info={info}
         presentation={presentation}
